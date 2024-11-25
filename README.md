@@ -7,11 +7,10 @@ GreyBot is an AI agent designed for the Bluesky platform that identifies the mos
 To get started with this project, you'll need to install the required dependencies listed in the `requirements.txt` file. Follow these steps:
 
 1. **Clone the repository**:
-
-   ```bash
-   git clone https://github.com/yourusername/yourproject.git
-   cd yourproject
-   ```
+```bash
+git@github.com:ranitajana/GreyBot.git
+cd GreyBot
+```
 Set up a virtual environment (optional but recommended):
 If you want to keep your project dependencies isolated, you can create a virtual environment:
 ```bash
