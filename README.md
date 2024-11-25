@@ -8,7 +8,6 @@ GreyBot is an AI agent designed for the Bluesky platform that identifies the mos
 `Automated Thread Generation:` Every 30 minutes, GreyBot automatically generates and posts a new thread. This feature allows users to receive regular updates without needing to actively search for information.
 
 `User Engagement:` GreyBot is programmed to respond to user mentions within one minute. This quick interaction fosters community engagement and encourages discussions around AI topics.
-Fact-Checking and Summarization: Users can tag GreyBot with #factcheck or #summarise to prompt it to verify facts or summarize content from posts, enhancing the reliability of information shared on the platform.
 
 `Fact-Checking and Summarization:` Users can tag GreyBot with #factcheck or #summarise to prompt it to verify facts or summarize content from posts, enhancing the reliability of information shared on the platform.
 
