@@ -11,27 +11,28 @@ To get started with this project, you'll need to install the required dependenci
    ```bash
    git clone https://github.com/yourusername/yourproject.git
    cd yourproject
-
+   ```
 Set up a virtual environment (optional but recommended):
 If you want to keep your project dependencies isolated, you can create a virtual environment:
-bash
+```bash
 python -m venv venv
-
+```
 Activate the virtual environment:
 On Windows:
-bash
+```bash
 venv\Scripts\activate
-
+```
 On macOS/Linux:
-bash
+```bash
 source venv/bin/activate
-
+```
 Install the required packages:
 Use pip to install the dependencies from requirements.txt:
-bash
+```bash
 pip install -r requirements.txt
-
+```
 Usage
 Once you have installed the necessary packages, you can run the code using the following command:
-bash
-python your_script.py
+```bash
+python post_reply.py
+```
