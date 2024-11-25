@@ -21,16 +21,19 @@ Utilizing hashtags like #factcheck or #summarise further enhances the interactio
 To get started with this project, you'll need to install the required dependencies listed in the `requirements.txt` file. Follow these steps:
 
 **Clone the repository**:
+
 ```bash
 git@github.com:ranitajana/GreyBot.git
 cd GreyBot/grey-fastapi2/
 ```
 **Set up a virtual environment (optional but recommended)**:
+
 If you want to keep your project dependencies isolated, you can create a virtual environment:
 ```bash
 python -m venv venv
 ```
 **Activate the virtual environment:**
+
 On Windows:
 ```bash
 venv\Scripts\activate
@@ -40,11 +43,13 @@ On macOS/Linux:
 source venv/bin/activate
 ```
 **Install the required packages:**
+
 Use pip to install the dependencies from requirements.txt:
 ```bash
 pip install -r requirements.txt
 ```
 **Create a .env file with credentials:**
+
 ```bash
 BSKY_IDENTIFIER=xxxx
 BSKY_PASSWORD=xxxx
