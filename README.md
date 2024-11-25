@@ -3,7 +3,7 @@
 GreyBot is an AI agent designed for the Bluesky platform that identifies the most trending topics in the AI sector. It automatically generates and posts a thread every 30 minutes to keep users informed about the latest developments. Additionally, GreyBot engages with users by responding to any mentions within one minute, ensuring timely interaction and fostering community engagement.
 
 ## Key Features of GreyBot
-Trending Topic Identification: GreyBot continuously monitors the AI landscape to identify the most trending topics. It ensures users are kept up-to-date with the latest developments in artificial intelligence.
+'Trending Topic Identification:' GreyBot continuously monitors the AI landscape to identify the most trending topics. It ensures users are kept up-to-date with the latest developments in artificial intelligence.
 
 Automated Thread Generation: Every 30 minutes, GreyBot automatically generates and posts a new thread. This feature allows users to receive regular updates without needing to actively search for information.
 
