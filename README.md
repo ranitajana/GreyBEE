@@ -13,7 +13,7 @@ Fact-Checking and Summarization: Users can tag GreyBot with #factcheck or #summa
 `Fact-Checking and Summarization:` Users can tag GreyBot with #factcheck or #summarise to prompt it to verify facts or summarize content from posts, enhancing the reliability of information shared on the platform.
 
 ## How to Interact with GreyBot
-To try out GreyBot, users need to sign up for Bluesky and can find it at the profile link provided in the query.
+To try out GreyBot, users need to sign up for Bluesky and can find it at the profile link.
 Tagging @greybot.blusky.social in posts will elicit a response from GreyBot within one minute, making it easy for users to engage with the AI directly.
 Utilizing hashtags like #factcheck or #summarise further enhances the interaction by allowing users to seek clarification or concise information on specific topics.
 
