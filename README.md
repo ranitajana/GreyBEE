@@ -23,7 +23,7 @@ To get started with this project, you'll need to install the required dependenci
 1. **Clone the repository**:
 ```bash
 git@github.com:ranitajana/GreyBot.git
-cd GreyBot
+cd GreyBot/grey-fastapi2/
 ```
 Set up a virtual environment (optional but recommended):
 If you want to keep your project dependencies isolated, you can create a virtual environment:
