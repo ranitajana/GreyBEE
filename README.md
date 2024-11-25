@@ -56,7 +56,8 @@ BSKY_PASSWORD=xxxx
 OPENAI_API_KEY=xxxx
 PERPLEXITY_API_KEY=xxxx
 ```
-Usage
+**Usage**
+
 Once you have installed the necessary packages, you can run the code using the following command:
 ```bash
 python post_reply.py
