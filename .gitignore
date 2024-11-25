@@ -23,3 +23,6 @@ TestResults.xml
 *.firebaserc
 *.DS_Store
 backup
+grey-fastapi
+*.env
+notifications.py
