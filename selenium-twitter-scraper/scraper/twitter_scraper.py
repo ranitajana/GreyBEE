@@ -30,6 +30,10 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
 
+from openai import OpenAI
+import schedule
+import time
+
 TWITTER_LOGIN_URL = "https://twitter.com/i/flow/login"
 
 class Twitter_Scraper:
@@ -38,6 +42,7 @@ class Twitter_Scraper:
         mail,
         username,
         password,
+        openai_key,
         max_tweets=50,
         scrape_username=None,
         scrape_hashtag=None,
@@ -78,6 +83,8 @@ class Twitter_Scraper:
             scrape_top,
             scrape_poster_details,
         )
+        self.openai_client = OpenAI(api_key=openai_key)
+        self.replied_tweets = set()
 
     def _config_scraper(
         self,
@@ -648,3 +655,91 @@ It may be due to the following:
         
         # Refresh the page
         self.driver.refresh()
+
+    def _get_ai_response(self, tweet_content):
+        """Get response from OpenAI API"""
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are GreyBotAI, a helpful and friendly AI assistant. Keep responses concise and under 280 characters."},
+                    {"role": "user", "content": f"Please respond to this tweet: {tweet_content}"}
+                ],
+                max_tokens=100,
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error getting AI response: {e}")
+            return None
+
+    def _process_mentions(self, tweets_df):
+        """Process and respond to mentions from dataframe"""
+        try:
+            if tweets_df.empty:
+                print("No tweets to process")
+                return False
+
+            for _, row in tweets_df.iterrows():
+                tweet_id = row['Tweet ID'].replace('tweet_id:', '')
+                
+                if tweet_id in self.replied_tweets:
+                    continue
+
+                tweet_content = row['Content']
+                tweet_author = row['Handle']
+                
+                if tweet_author == self.username:
+                    continue
+
+                ai_response = self._get_ai_response(tweet_content)
+                if ai_response:
+                    reply = f"@{tweet_author} {ai_response}"
+                    self.post_tweet(reply)
+                    print(f"Replied to tweet {tweet_id}: {reply}")
+                    self.replied_tweets.add(tweet_id)
+                    time.sleep(2)  # Rate limiting
+
+            return True
+
+        except Exception as e:
+            print(f"Error processing mentions: {e}")
+            return False
+
+    def _scrape_and_reply(self):
+        """Scrape mentions and reply to them"""
+        try:
+            # Clear previous data
+            self.data = []
+            
+            # Scrape new mentions
+            self.scrape_tweets(
+                max_tweets=10,
+                scrape_latest=True,
+                scrape_top=False,
+                scrape_query=f"(@{self.username})"
+            )
+            
+            # Convert scraped data to DataFrame
+            tweets_df = pd.DataFrame({
+                'Tweet ID': [f"tweet_id:{tweet[14]}" for tweet in self.data],
+                'Content': [tweet[4] for tweet in self.data],
+                'Handle': [tweet[1] for tweet in self.data]
+            })
+            
+            print(f"Number of tweets collected: {len(tweets_df)}")
+            self._process_mentions(tweets_df)
+            
+            return True
+
+        except Exception as e:
+            print(f"Error in scrape and reply: {e}")
+            return False
+
+    def start_monitoring_mentions(self):
+        """Start monitoring mentions and replying"""
+        # First run immediately
+        self._scrape_and_reply()
+        
+        # Schedule runs every 1 minute
+        schedule.every(1).minutes.do(self._scrape_and_reply)

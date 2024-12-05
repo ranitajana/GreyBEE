@@ -13,37 +13,6 @@ except Exception as e:
     print(f"Error loading .env file: {e}")
     sys.exit(1)
 
-def scrape_tweets(scraper):
-    try:
-        # Define your arguments here
-        args = {
-            "tweets": 10,
-            # "hashtag": "AI",
-            "latest": True,
-            "top": True,
-            # "username": "@elonmusk", # username to scrape from
-            # "query": "AI", # search query
-            "query": "(@GreyBotAI)" # search query with mention
-        }
-
-        scraper.scrape_tweets(
-            max_tweets=args["tweets"],
-            # scrape_hashtag=args["hashtag"],
-            scrape_latest=args["latest"],
-            scrape_top=args["top"],
-            # scrape_username=args["username"],
-            scrape_query=args["query"]
-        )
-        
-        print(f"Number of tweets collected: {len(scraper.data)}")
-        scraper.save_to_csv()
-        
-        return True
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return False
-
 def main():
     print("Starting Twitter Scraper...")
     
@@ -52,17 +21,12 @@ def main():
         mail=os.getenv("TWITTER_MAIL"),
         username=os.getenv("TWITTER_USERNAME"),
         password=os.getenv("TWITTER_PASSWORD"),
+        openai_key=os.getenv("OPENAI_API_KEY")
     )
     
-    # Initial login
+    # Initial login and start monitoring mentions
     scraper.login()
-    # scraper.post_tweet("Hello, Fam!")
-    # First run
-    scrape_tweets(scraper)
-    scraper.post_tweet("Hello, X!")
-    
-    # Schedule subsequent runs every 5 minutes reusing the same scraper instance
-    schedule.every(5).minutes.do(scrape_tweets, scraper=scraper)
+    scraper.start_monitoring_mentions()
     
     print("\nScheduler started. Press Ctrl+C to exit.")
     
@@ -72,7 +36,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nScraper stopped by user")
-        scraper.driver.quit()  # Clean up the WebDriver when stopping
+        scraper.driver.quit()
         sys.exit(0) 
 
 if __name__ == "__main__":
