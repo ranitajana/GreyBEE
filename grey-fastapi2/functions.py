@@ -396,10 +396,10 @@ def generate_thread_content(viral_posts: list, used_topics: set, client) -> list
         topic_response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are an AI analyst. Identify the single most significant "
-                                            "and trending AI topic from the provided posts. Respond with just "
+                {"role": "system", "content": "You are an analyst. Identify the single most significant "
+                                            "and trending topic from the provided posts. Respond with just "
                                             "the topic name, no explanation."},
-                {"role": "user", "content": f"What's the main trending AI topic in these posts?\n\n{posts_content}"}
+                {"role": "user", "content": f"What's the main trending topic in these posts?\n\n{posts_content}"}
             ],
             max_tokens=50,
             temperature=0.3
@@ -525,7 +525,7 @@ def post_trending_content(token, bot_did, used_posts, used_topics, client, keywo
     Manages tracking of used posts and topics to avoid duplicates.
     Returns True if the entire process completes successfully."""
     try:
-        # Get viral AI posts
+        # Get viral posts
         print("Finding viral posts...")
         viral_posts = get_viral_posts(token, used_posts, keywords)
         

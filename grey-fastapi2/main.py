@@ -118,5 +118,5 @@ def main():
             time.sleep(MENTION_CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    print("Starting AI trending bot...")
+    print("Starting trending bot...")
     main() 
