@@ -159,7 +159,7 @@ def get_post_info(token, post_uri):
         print(f"Error getting post info: {str(e)}")
     return None
 
-def generate_response(post_content: str) -> Optional[str]:
+def generate_response(post_content: str, client) -> Optional[str]:
     """Generate an AI-powered response to a Bluesky post using OpenAI's API.
     Ensures responses are concise (under 280 characters) and contextually relevant.
     Returns None if generation fails or produces empty content."""
@@ -187,7 +187,7 @@ def generate_response(post_content: str) -> Optional[str]:
         print(f"Error generating OpenAI response: {str(e)}")
         return None
 
-def post_reply(token, author_handle, post_content, post_uri, bot_did):
+def post_reply(token, author_handle, post_content, post_uri, bot_did, client):
     """Post a reply to a specific post."""
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
@@ -204,7 +204,10 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did):
     print(f"Preparing reply for {'thread' if post_info['is_reply'] else 'main post'}")
     
     # Generate AI response
-    ai_response = generate_response(post_content)
+    ai_response = generate_response(post_content, client)
+    if not ai_response:
+        return False
+    
     reply_with_mention = f"@{author_handle} {ai_response}"
     
     # Create facet for the mention
@@ -573,16 +576,16 @@ def post_trending_content(token, bot_did, used_posts, used_topics, client, keywo
         print(f"Error in post_trending_content: {str(e)}")
         return False
 
-def check_notifications(token):
-    """Check for new notifications and mark them as seen."""
+def check_notifications(token, client):
+    """Check for new notifications, analyze replies, and respond appropriately."""
     url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
     params = {
-        "limit": 20,  # Adjust as needed
-        "seenAt": None  # This will get all unseen notifications
+        "limit": 20,
+        "seenAt": None
     }
     
     try:
@@ -601,7 +604,63 @@ def check_notifications(token):
                 reason = notif.get('reason', 'notification')
                 author = notif.get('author', {}).get('handle', 'unknown')
                 text = notif.get('record', {}).get('text', '')
-                print(f"- {reason} from @{author}: {text[:100]}...")
+                
+                # Only process reply notifications
+                if reason == 'reply':
+                    print(f"Processing reply from @{author}: {text[:100]}...")
+                    
+                    # Get the original post/thread context
+                    reply_parent = notif.get('record', {}).get('reply', {}).get('parent', {}).get('uri')
+                    if reply_parent:
+                        thread_data, _ = get_post_thread(token, reply_parent)
+                        if thread_data:
+                            original_post = thread_data.get('post', {}).get('record', {}).get('text', '')
+                            
+                            # Analyze the reply and generate response using OpenAI
+                            analysis_prompt = f"""Analyze this conversation and generate an appropriate response:
+
+                            Original post: {original_post}
+                            Reply from @{author}: {text}
+
+                            Consider:
+                            1. The tone of the reply (positive, negative, neutral, questioning)
+                            2. The specific points or questions raised
+                            3. The context of the original post
+                            
+                            Generate a friendly, relevant response under 280 characters that addresses the specific points raised."""
+                            
+                            try:
+                                response = client.chat.completions.create(
+                                    model="gpt-4",  # Using GPT-4 for better understanding
+                                    messages=[
+                                        {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Keep responses concise, relevant, and friendly."},
+                                        {"role": "user", "content": analysis_prompt}
+                                    ],
+                                    max_tokens=100,
+                                    temperature=0.7
+                                )
+                                
+                                ai_response = response.choices[0].message.content.strip()
+                                if ai_response:
+                                    # Post the response
+                                    reply_uri = notif.get('uri')
+                                    success = post_reply(
+                                        token=token,
+                                        author_handle=author,
+                                        post_content=text,
+                                        post_uri=reply_uri,
+                                        bot_did=get_bot_did(token, os.getenv('BSKY_IDENTIFIER')),
+                                        client=client
+                                    )
+                                    if success:
+                                        print(f"Successfully responded to @{author}'s reply")
+                                    else:
+                                        print(f"Failed to post response to @{author}'s reply")
+                                
+                            except Exception as e:
+                                print(f"Error generating AI response: {str(e)}")
+                else:
+                    print(f"- {reason} from @{author}: {text[:100]}...")
                 
             # Mark notifications as seen
             seen_url = "https://bsky.social/xrpc/app.bsky.notification.updateSeen"

@@ -78,8 +78,8 @@ def main():
                     time.sleep(CHECK_INTERVAL)
                     continue
             
-            # Check notifications
-            check_notifications(access_token)
+            # Check notifications with OpenAI client
+            check_notifications(access_token, client)
             
             # Check if it's time to post a new thread
             if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
