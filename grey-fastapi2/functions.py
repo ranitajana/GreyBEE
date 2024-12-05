@@ -572,3 +572,53 @@ def post_trending_content(token, bot_did, used_posts, used_topics, client, keywo
     except Exception as e:
         print(f"Error in post_trending_content: {str(e)}")
         return False
+
+def check_notifications(token):
+    """Check for new notifications and mark them as seen."""
+    url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    params = {
+        "limit": 20,  # Adjust as needed
+        "seenAt": None  # This will get all unseen notifications
+    }
+    
+    try:
+        # Get notifications
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            print(f"Failed to get notifications: {response.status_code} - {response.text}")
+            return False
+            
+        notifications = response.json().get('notifications', [])
+        unseen = [n for n in notifications if not n.get('isRead', False)]
+        
+        if unseen:
+            print(f"\nFound {len(unseen)} new notifications:")
+            for notif in unseen:
+                reason = notif.get('reason', 'notification')
+                author = notif.get('author', {}).get('handle', 'unknown')
+                text = notif.get('record', {}).get('text', '')
+                print(f"- {reason} from @{author}: {text[:100]}...")
+                
+            # Mark notifications as seen
+            seen_url = "https://bsky.social/xrpc/app.bsky.notification.updateSeen"
+            seen_data = {
+                "seenAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z')
+            }
+            
+            seen_response = requests.post(seen_url, headers=headers, json=seen_data)
+            if seen_response.status_code == 200:
+                print("Successfully marked notifications as seen")
+                return True
+            else:
+                print(f"Failed to mark notifications as seen: {seen_response.status_code}")
+                return False
+                
+        return True
+        
+    except Exception as e:
+        print(f"Error checking notifications: {str(e)}")
+        return False
