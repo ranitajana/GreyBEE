@@ -26,3 +26,5 @@ backup
 grey-fastapi
 *.env
 notifications.py
+tweet_to_twitter/
+tweet_to_twittercookies/

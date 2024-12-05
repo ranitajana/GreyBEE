@@ -24,12 +24,13 @@ from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
 
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
 
 TWITTER_LOGIN_URL = "https://twitter.com/i/flow/login"
-
 
 class Twitter_Scraper:
     def __init__(
@@ -305,6 +306,45 @@ It may be due to the following:
                 else:
                     print("Re-attempting to input password...")
                     sleep(2)
+
+    def post_tweet(self, tweet_text):
+        """
+        Posts a tweet with the given text
+        Args:
+            tweet_text (str): The text content of the tweet
+        """
+        print(f"Posting tweet: {tweet_text}")
+        try:
+            # # Wait for login to complete and navigate to home page
+            # WebDriverWait(self.driver, 10).until(
+            #     EC.presence_of_element_located((By.XPATH, "//a[@href='/home']"))
+            # )
+            
+            # Navigate to the home page to ensure the tweet box is available
+            self.go_to_home()
+
+            # Create a WebDriverWait object
+            wait = WebDriverWait(self.driver, 20)
+
+            # Find and click the tweet composition box (updated selector)
+            tweet_box = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='tweetTextarea_0']"))
+            )
+            tweet_box.send_keys(tweet_text)
+
+            # Find and click the tweet button (updated selector)
+            tweet_button = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "[data-testid='tweetButtonInline']"))
+            )
+            tweet_button.click()
+
+            # Wait for a short period to ensure the tweet is posted
+            sleep(5)
+
+            print("Tweet posted successfully")
+            
+        except Exception as e:
+            print(f"Error posting tweet: {e}")
 
     def go_to_home(self):
         self.driver.get("https://twitter.com/home")

@@ -56,9 +56,10 @@ def main():
     
     # Initial login
     scraper.login()
-    
+    # scraper.post_tweet("Hello, Fam!")
     # First run
     scrape_tweets(scraper)
+    scraper.post_tweet("Hello, X!")
     
     # Schedule subsequent runs every 5 minutes reusing the same scraper instance
     schedule.every(5).minutes.do(scrape_tweets, scraper=scraper)
@@ -72,7 +73,7 @@ def main():
     except KeyboardInterrupt:
         print("\nScraper stopped by user")
         scraper.driver.quit()  # Clean up the WebDriver when stopping
-        sys.exit(0)
+        sys.exit(0) 
 
 if __name__ == "__main__":
     main()
