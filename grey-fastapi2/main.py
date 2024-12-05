@@ -4,7 +4,7 @@ import time
 from dotenv import load_dotenv
 from openai import OpenAI
 from functions import (get_auth_token, get_bot_did, search_mentions, 
-                      post_reply, post_trending_content, get_viral_posts)
+                      post_reply, post_trending_content, get_viral_posts, check_notifications)
 
 def main():
     # Load environment variables from .env file
@@ -24,9 +24,9 @@ def main():
     used_posts = set()
     used_topics = set()
     
-    # Define time intervals for posting and checking mentions
+    # Define time intervals for posting and checking mentions/notifications
     THREAD_POST_INTERVAL = 1800  # 30 minutes in seconds
-    MENTION_CHECK_INTERVAL = 60  # 1 minute in seconds
+    CHECK_INTERVAL = 60  # 1 minute in seconds
     last_post_time = None
     #List of keywords to search for viral posts
     keywords = [
@@ -68,15 +68,18 @@ def main():
                 
                 if not access_token:
                     print("Failed to get authentication tokens. Waiting...")
-                    time.sleep(MENTION_CHECK_INTERVAL)
+                    time.sleep(CHECK_INTERVAL)
                     continue
                 
                 # Get bot DID using the access token
                 bot_did = get_bot_did(access_token, os.getenv('BSKY_IDENTIFIER'))
                 if not bot_did:
                     print("Failed to get bot DID. Waiting...")
-                    time.sleep(MENTION_CHECK_INTERVAL)
+                    time.sleep(CHECK_INTERVAL)
                     continue
+            
+            # Check notifications
+            check_notifications(access_token)
             
             # Check if it's time to post a new thread
             if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
@@ -109,13 +112,13 @@ def main():
                 print(f"Error handling mentions: {e}")
                 
             # Wait before the next check
-            print(f"\nWaiting {MENTION_CHECK_INTERVAL} seconds before next check...")
-            time.sleep(MENTION_CHECK_INTERVAL)
+            print(f"\nWaiting {CHECK_INTERVAL} seconds before next check...")
+            time.sleep(CHECK_INTERVAL)
             
         except Exception as e:
             print(f"Error in main loop: {str(e)}")
-            print(f"Waiting {MENTION_CHECK_INTERVAL} seconds before retry...")
-            time.sleep(MENTION_CHECK_INTERVAL)
+            print(f"Waiting {CHECK_INTERVAL} seconds before retry...")
+            time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     print("Starting trending bot...")
