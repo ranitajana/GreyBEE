@@ -171,7 +171,7 @@ def generate_response(post_content: str, client) -> Optional[str]:
                 Be concise, friendly, and relevant. Do not use hashtags or emojis."""},
                 {"role": "user", "content": f"""Generate a very concise response (under 250 characters) to: {post_content}
                 
-                IMPORTANT: Response MUST be under 250 characters to allow for mentions."""}
+                """}
             ],
             max_tokens=100,
             temperature=0.7,
@@ -182,8 +182,8 @@ def generate_response(post_content: str, client) -> Optional[str]:
         ai_response = response.choices[0].message.content.strip()
         
         # Safety check: truncate if still too long
-        if len(ai_response) > 250:
-            ai_response = ai_response[:247] + "..."
+        if len(ai_response) > 300:
+            ai_response = ai_response[:299] + "..."
             
         return ai_response
         
@@ -191,7 +191,7 @@ def generate_response(post_content: str, client) -> Optional[str]:
         print(f"Error generating OpenAI response: {str(e)}")
         return None
 
-def post_reply(token, author_handle, post_content, post_uri, bot_did, client):
+def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response=None):
     """Post a reply to a specific post."""
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
@@ -200,17 +200,30 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did, client):
     }
     
     # Get the post info including CID
-    post_info = get_post_info(token, post_uri)
-    if not post_info:
+    thread_data, post_cid = get_post_thread(token, post_uri)
+    if not thread_data or not post_cid:
         print(f"Failed to get post info for URI: {post_uri}")
         return False
     
-    print(f"Preparing reply for {'thread' if post_info['is_reply'] else 'main post'}")
+    # Get the root post information
+    root_uri = thread_data.get('post', {}).get('record', {}).get('reply', {}).get('root', {}).get('uri')
+    root_cid = thread_data.get('post', {}).get('record', {}).get('reply', {}).get('root', {}).get('cid')
     
-    # Generate AI response
-    ai_response = generate_response(post_content, client)
-    if not ai_response:
-        return False
+    # If no root is found, this is the root
+    if not root_uri or not root_cid:
+        root_uri = post_uri
+        root_cid = post_cid
+    
+    print(f"Preparing reply for thread. Root URI: {root_uri}, Parent URI: {post_uri}")
+    
+    # Only generate AI response if not provided
+    if ai_response is None:
+        ai_response = generate_response(post_content, client)
+        if not ai_response:
+            return False
+    
+    # Debugging: Print the AI-generated response
+    print(f"AI-generated response to be posted: {ai_response}")
     
     reply_with_mention = f"@{author_handle} {ai_response}"
     
@@ -236,12 +249,12 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did, client):
             "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
             "reply": {
                 "root": {
-                    "uri": post_info['uri'],
-                    "cid": post_info['cid']
+                    "uri": root_uri,
+                    "cid": root_cid
                 },
                 "parent": {
-                    "uri": post_info['uri'],
-                    "cid": post_info['cid']
+                    "uri": post_uri,
+                    "cid": post_cid
                 }
             }
         }
@@ -250,7 +263,7 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did, client):
     try:
         response = requests.post(url, headers=headers, json=data)
         if response.status_code == 200:
-            print(f"Successfully posted AI-generated reply to {'thread' if post_info['is_reply'] else 'main post'}")
+            print(f"Successfully posted reply in thread. Root: {root_uri}, Parent: {post_uri}")
             return True
         else:
             print(f"Failed to post reply: {response.status_code} - {response.text}")
@@ -580,65 +593,77 @@ def post_trending_content(token, bot_did, used_posts, used_topics, client, keywo
         print(f"Error in post_trending_content: {str(e)}")
         return False
 
-def get_full_thread_context(token, post_uri):
+def get_full_thread_context(token, post_uri, client):
     """Get the complete thread context by traversing up to the root post and collecting all relevant posts."""
     thread_context = []
-    current_uri = post_uri
-    visited_uris = set()  # To prevent infinite loops
     
-    while current_uri and current_uri not in visited_uris:
-        visited_uris.add(current_uri)
-        url = "https://bsky.social/xrpc/app.bsky.feed.getPostThread"
-        params = {
-            "uri": current_uri,
-            "depth": 10
-        }
+    try:
+        # Get thread using the client
+        res = client.get_post_thread(uri=post_uri)
+        print(res)  # Debugging: print the response
+        thread = res.thread
         
-        try:
-            response = requests.get(
-                url, 
-                headers={"Authorization": f"Bearer {token}"}, 
-                params=params
-            )
-            
-            if response.status_code == 200:
-                thread_data = response.json().get('thread', {})
-                
-                # Get the current post's data
-                post = thread_data.get('post', {})
-                post_text = post.get('record', {}).get('text', '')
-                post_author = post.get('author', {}).get('handle', '')
-                created_at = post.get('record', {}).get('createdAt', '')
-                
-                # Add to context list with timestamp for ordering
+        if not thread:
+            print("No thread data found for the given URI.")
+            return []
+        
+        def process_thread_node(node):
+            """Recursively process thread nodes to extract posts."""
+            if hasattr(node, 'post'):
+                post = node.post
                 thread_context.append({
-                    'author': post_author,
-                    'text': post_text,
-                    'created_at': created_at,
-                    'uri': current_uri
+                    'author': post.author.handle,
+                    'text': post.record.text,
+                    'created_at': post.record.created_at,
+                    'uri': post.uri,
+                    'is_root': not hasattr(post.record, 'reply'),
+                    'depth': getattr(node, 'depth', 0)
                 })
-                
-                # Check if this post is a reply
-                reply_parent = post.get('record', {}).get('reply', {}).get('parent', {}).get('uri')
-                if reply_parent:
-                    current_uri = reply_parent
-                else:
-                    break  # We've reached the root post
-                    
-            else:
-                print(f"Error retrieving thread: {response.status_code}")
-                break
-                
-        except Exception as e:
-            print(f"Error in get_full_thread_context: {str(e)}")
-            break
-    
-    # Sort posts by timestamp to get chronological order
-    thread_context.sort(key=lambda x: x['created_at'])
-    
-    return thread_context
+            
+            # Process parent posts
+            if hasattr(node, 'parent') and node.parent is not None:
+                process_thread_node(node.parent)
+            
+            # Process replies
+            if hasattr(node, 'replies') and node.replies is not None:
+                for reply in node.replies:
+                    process_thread_node(reply)
+        
+        # Start processing from the thread root
+        process_thread_node(thread)
+        
+        # Sort posts by timestamp to get chronological order
+        thread_context.sort(key=lambda x: x['created_at'])
+        
+        # Print the thread for debugging
+        print("\nThread context:")
+        for i, post in enumerate(thread_context):
+            print(f"\n{i+1}. @{post['author']} (Depth: {post['depth']}):")
+            print(f"   {post['text']}")
+            print(f"   Time: {post['created_at']}")
+            print(f"   {'ROOT POST' if post['is_root'] else 'REPLY'}")
+        
+        return thread_context
+        
+    except Exception as e:
+        print(f"Error getting thread context: {str(e)}")
+        return []
 
-def check_notifications(token, client):
+def get_reply_details(notification):
+    """Extract URI and CID from a reply notification."""
+    try:
+        uri = notification.get('uri')
+        cid = notification.get('cid')
+        author = notification.get('author', {}).get('handle', 'unknown')
+        print(f"Reply from @{author}:")
+        print(f"URI: {uri}")
+        print(f"CID: {cid}")
+        return uri, cid
+    except Exception as e:
+        print(f"Error getting reply details: {str(e)}")
+        return None, None
+
+def check_notifications(token, client, client_atproto):
     """Check for new notifications, analyze replies, and respond appropriately."""
     url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
     headers = {
@@ -668,39 +693,55 @@ def check_notifications(token, client):
                 
                 # Only process reply notifications
                 if reason == 'reply':
-                    print(f"Processing reply from @{author}: {text[:100]}...")
+                    print(f"\nProcessing reply from @{author}: {text[:100]}...")
                     
+                    # Get and print reply details
+                    uri, cid = get_reply_details(notif)
+                    if not uri or not cid:
+                        continue
+
                     # Get the complete thread context
-                    thread_context = get_full_thread_context(token, notif.get('uri'))
+                    thread_context = get_full_thread_context(token, uri, client_atproto)
                     
                     if thread_context:
-                        # Format the thread context for the AI
+                        # Format the thread context for the AI, including depth information
                         thread_conversation = "\n".join([
-                            f"@{post['author']}: {post['text']}" 
+                            f"@{post['author']} ({'ROOT' if post['is_root'] else f'REPLY at depth {post['depth']}'}):\n{post['text']}" 
                             for post in thread_context
                         ])
                         
+                        print("\nGenerating response based on full thread context...")
+                        
                         # Analyze the reply and generate response using OpenAI
-                        analysis_prompt = f"""Analyze this conversation thread and generate an appropriate response:
+                        analysis_prompt = f"""You are responding to a conversation thread on Bluesky. Here's the complete thread in chronological order:
 
-                        Full conversation thread (in chronological order):
                         {thread_conversation}
 
-                        Latest reply from @{author}: {text}
+                        The latest reply is from @{author}: "{text}"
 
-                        Consider:
-                        1. The complete context of the conversation from start to finish
-                        2. The tone and content of all previous messages
-                        3. The specific points or questions raised in the latest reply
-                        4. Any recurring themes or topics in the thread
-                        
-                        Generate a friendly, relevant response under 280 characters that shows understanding of the full conversation context."""
+                        Please generate a response that:
+                        1. Shows clear understanding of the entire conversation thread from start to finish
+                        2. Directly addresses the latest question/comment
+                        3. Maintains context from earlier messages in the thread
+                        4. Is relevant to the specific topic being discussed
+                        5. Provides accurate and helpful information
+                        6. Is concise and under 280 characters
+
+                        Important guidelines:
+                        - Your response must be under 280 characters
+                        - Stay focused on the specific topic and context
+                        - Be accurate and informative
+                        - Maintain a helpful and friendly tone
+                        - Don't repeat information already mentioned in the thread
+                        - Address any specific questions raised in the latest reply
+
+                        Generate a response:"""
                         
                         try:
                             response = client.chat.completions.create(
                                 model="gpt-4",
                                 messages=[
-                                    {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Keep responses concise, relevant, and friendly."},
+                                    {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Keep responses concise, relevant, and friendly. Always maintain context from the full conversation thread."},
                                     {"role": "user", "content": analysis_prompt}
                                 ],
                                 max_tokens=100,
@@ -709,15 +750,21 @@ def check_notifications(token, client):
                             
                             ai_response = response.choices[0].message.content.strip()
                             if ai_response:
-                                # Post the response
-                                reply_uri = notif.get('uri')
+                                # Ensure response is within character limit
+                                if len(ai_response) > 280:
+                                    ai_response = ai_response[:277] + "..."
+                                
+                                print(f"\nGenerated response: {ai_response}")
+                                
+                                # Pass the generated AI response to post_reply
                                 success = post_reply(
                                     token=token,
                                     author_handle=author,
                                     post_content=text,
-                                    post_uri=reply_uri,
+                                    post_uri=uri,
                                     bot_did=get_bot_did(token, os.getenv('BSKY_IDENTIFIER')),
-                                    client=client
+                                    client=client,
+                                    ai_response=ai_response  # Pass the generated response
                                 )
                                 if success:
                                     print(f"Successfully responded to @{author}'s reply")

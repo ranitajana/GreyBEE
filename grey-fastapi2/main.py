@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import time
 from dotenv import load_dotenv
 from openai import OpenAI
+from atproto import Client
 from functions import (get_auth_token, get_bot_did, search_mentions, 
                       post_reply, post_trending_content, get_viral_posts, check_notifications)
 
@@ -12,6 +13,8 @@ def main():
     
     # Initialize OpenAI client with API key
     client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    client_atproto = Client()
+    client_atproto.login(os.getenv('BSKY_IDENTIFIER'), os.getenv('BSKY_PASSWORD'))
     
     # Initialize variables for authentication tokens and bot DID
     access_token = None
@@ -79,15 +82,15 @@ def main():
                     continue
             
             # Check notifications with OpenAI client
-            check_notifications(access_token, client)
+            check_notifications(access_token, client, client_atproto)
             
-            # # Check if it's time to post a new thread
-            # if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
-            #     print("\nPosting new trending thread...")
-            #     success = post_trending_content(access_token, bot_did, used_posts, used_topics, client,keywords)
-            #     if success:
-            #         last_post_time = current_time
-            #     print(f"Thread posting result: {success}")
+            # Check if it's time to post a new thread
+            if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
+                print("\nPosting new trending thread...")
+                success = post_trending_content(access_token, bot_did, used_posts, used_topics, client,keywords)
+                if success:
+                    last_post_time = current_time
+                print(f"Thread posting result: {success}")
             
             # # Handle mentions by searching and replying
             # try:
