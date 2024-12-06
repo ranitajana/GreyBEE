@@ -4,8 +4,13 @@ import time
 from dotenv import load_dotenv
 from openai import OpenAI
 from atproto import Client
-from functions import (get_auth_token, get_bot_did, search_mentions, 
-                      post_reply, post_trending_content, get_viral_posts, check_notifications)
+from functions import (
+    get_auth_token, 
+    get_bot_did, 
+    post_reply,
+    post_trending_content, 
+    check_notifications
+)
 
 def main():
     # Load environment variables from .env file
@@ -92,28 +97,6 @@ def main():
                     last_post_time = current_time
                 print(f"Thread posting result: {success}")
             
-            # # Handle mentions by searching and replying
-            # try:
-            #     print("\nSearching for mentions...")
-            #     df_mentions = search_mentions(access_token, os.getenv('BSKY_IDENTIFIER'))
-            #     if df_mentions is not None and not df_mentions.empty:
-            #         print(f"Found {len(df_mentions)} mentions to process")
-            #         for _, mention in df_mentions.iterrows():
-            #             print(f"Processing mention from @{mention['author_username']}")
-            #             success = post_reply(
-            #                 token=access_token,
-            #                 author_handle=mention['author_username'],
-            #                 post_content=mention['post_content'],
-            #                 post_uri=mention['uri'],
-            #                 bot_did=bot_did
-            #             )
-            #             print(f"Reply posted: {success}")
-            #             time.sleep(2)  # Small delay between replies if multiple
-            #     else:
-            #         print("No new mentions to process")
-            # except Exception as e:
-            #     print(f"Error handling mentions: {e}")
-                
             # Wait before the next check
             print(f"\nWaiting {CHECK_INTERVAL} seconds before next check...")
             time.sleep(CHECK_INTERVAL)
