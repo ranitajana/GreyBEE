@@ -35,54 +35,68 @@ class BotMemory:
             raise e
 
     def get_last_post(self, client_atproto: Client, bot_handle: str):
-        """Get the last three posts made by the bot."""
+        """Get the last 1000 posts made by the bot."""
         try:
-            print(f"\nFetching last three posts for {bot_handle}...")
+            print(f"\nFetching last 1000 posts for {bot_handle}...")
             profile = client_atproto.get_profile(bot_handle)
             
-            # Increased limit to ensure we can find 3 complete threads
-            feed = client_atproto.get_author_feed(profile.did, limit=30)
-            if not feed.feed:
-                print("No posts found")
-                return None
+            # Initialize variables for pagination
+            all_threads = []
+            cursor = None
+            posts_collected = 0
+            MAX_POSTS = 1000
+            POSTS_PER_PAGE = 100  # Maximum allowed by the API
             
-            # Track three separate threads
-            threads = []
-            current_thread = None
-            current_thread_time = None
-            
-            for post in feed.feed:
-                post_time = datetime.fromisoformat(post.post.record.created_at.replace('Z', '+00:00'))
+            while posts_collected < MAX_POSTS:
+                # Get feed with pagination
+                feed = client_atproto.get_author_feed(
+                    profile.did, 
+                    limit=POSTS_PER_PAGE,
+                    cursor=cursor
+                )
                 
-                if current_thread is None:
-                    # Start a new thread
-                    current_thread = [{
-                        'uri': post.post.uri,
-                        'cid': post.post.cid,
-                        'text': post.post.record.text,
-                        'created_at': post.post.record.created_at,
-                        'position': 'main'
-                    }]
-                    current_thread_time = post_time
-                else:
-                    # Check if this post belongs to current thread (within 1 minute)
-                    time_diff = abs((post_time - current_thread_time).total_seconds())
+                if not feed.feed:
+                    break
                     
-                    if time_diff <= 60:  # Within 1 minute window
-                        print(f"\nFound related post (time diff: {time_diff:.1f}s):")
-                        print(f"Text: {post.post.record.text[:100]}...")
-                        current_thread.append({
+                current_thread = None
+                current_thread_time = None
+                
+                for post in feed.feed:
+                    post_time = datetime.fromisoformat(post.post.record.created_at.replace('Z', '+00:00'))
+                    
+                    if current_thread is None:
+                        # Start a new thread
+                        current_thread = [{
                             'uri': post.post.uri,
                             'cid': post.post.cid,
                             'text': post.post.record.text,
                             'created_at': post.post.record.created_at,
-                            'position': 'thread'
-                        })
+                            'position': 'main'
+                        }]
+                        current_thread_time = post_time
                     else:
-                        # Start new thread if we haven't stored 3 threads yet
-                        if len(threads) < 3:  # Changed from 2 to 3
+                        # Check if this post belongs to current thread (within 1 minute)
+                        time_diff = abs((post_time - current_thread_time).total_seconds())
+                        
+                        if time_diff <= 60:  # Within 1 minute window
+                            print(f"\nFound related post (time diff: {time_diff:.1f}s):")
+                            print(f"Text: {post.post.record.text[:100]}...")
+                            current_thread.append({
+                                'uri': post.post.uri,
+                                'cid': post.post.cid,
+                                'text': post.post.record.text,
+                                'created_at': post.post.record.created_at,
+                                'position': 'thread'
+                            })
+                        else:
+                            # Store current thread and start a new one
                             if current_thread:
-                                threads.append(current_thread)
+                                all_threads.append(current_thread)
+                                posts_collected += len(current_thread)
+                                
+                                if posts_collected >= MAX_POSTS:
+                                    break
+                                    
                             current_thread = [{
                                 'uri': post.post.uri,
                                 'cid': post.post.cid,
@@ -91,21 +105,41 @@ class BotMemory:
                                 'position': 'main'
                             }]
                             current_thread_time = post_time
-                        else:
-                            break  # We have our 3 threads
-            
-            # Add the last thread if we haven't stored 3 yet
-            if current_thread and len(threads) < 3:  # Changed from 2 to 3
-                threads.append(current_thread)
+                
+                # Add the last thread from this page
+                if current_thread and posts_collected < MAX_POSTS:
+                    all_threads.append(current_thread)
+                    posts_collected += len(current_thread)
+                
+                # Update cursor for next page
+                if hasattr(feed, 'cursor') and feed.cursor:
+                    cursor = feed.cursor
+                else:
+                    break
+                    
+                print(f"Collected {posts_collected} posts so far...")
+                time.sleep(1)  # Rate limiting
             
             # Flatten the threads into a single list
             all_posts = []
-            for thread in threads:
+            for thread in all_threads:
                 thread.sort(key=lambda x: x['created_at'])
                 all_posts.extend(thread)
             
-            print(f"\nTotal threads found: {len(threads)}")
-            for idx, post in enumerate(all_posts, 1):
+            # Trim to exactly 1000 if we got more
+            all_posts = all_posts[:MAX_POSTS]
+            
+            print(f"\nTotal threads found: {len(all_threads)}")
+            print(f"Total posts collected: {len(all_posts)}")
+            
+            # Log sample of posts (first 5 and last 5)
+            print("\nSample of first 5 posts:")
+            for idx, post in enumerate(all_posts[:5], 1):
+                print(f"\n{idx}. {post['position'].upper()}:")
+                print(f"Text: {post['text'][:100]}...")
+            
+            print("\nSample of last 5 posts:")
+            for idx, post in enumerate(all_posts[-5:], len(all_posts)-4):
                 print(f"\n{idx}. {post['position'].upper()}:")
                 print(f"Text: {post['text'][:100]}...")
             
@@ -124,54 +158,53 @@ class BotMemory:
             
             print(f"\nPreparing to store {len(posts)} posts...")
             
-            # Process posts one at a time for better reliability
-            for idx, post in enumerate(posts, 1):
-                print(f"\nProcessing post {idx}/{len(posts)}:")
-                print(f"Text: {post['text'][:100]}...")
+            # Process posts in batches for better efficiency
+            BATCH_SIZE = 50
+            for i in range(0, len(posts), BATCH_SIZE):
+                batch = posts[i:i + BATCH_SIZE]
+                print(f"\nProcessing batch {i//BATCH_SIZE + 1}/{(len(posts) + BATCH_SIZE - 1)//BATCH_SIZE}:")
                 
-                try:
-                    # Generate embedding
-                    embedding = self.openai_client.embeddings.create(
-                        input=post['text'],
-                        model="text-embedding-3-small"
-                    ).data[0].embedding
-                    
-                    vector = {
-                        'id': post['uri'],
-                        'values': embedding,
-                        'metadata': {
-                            'uri': post['uri'],
-                            'cid': post['cid'],
-                            'text': post['text'],
-                            'created_at': post['created_at'],
-                            'position': post['position']
+                vectors = []
+                for post in batch:
+                    try:
+                        # Generate embedding
+                        embedding = self.openai_client.embeddings.create(
+                            input=post['text'],
+                            model="text-embedding-3-small"
+                        ).data[0].embedding
+                        
+                        vector = {
+                            'id': post['uri'],
+                            'values': embedding,
+                            'metadata': {
+                                'uri': post['uri'],
+                                'cid': post['cid'],
+                                'text': post['text'],
+                                'created_at': post['created_at'],
+                                'position': post['position']
+                            }
                         }
-                    }
-                    
-                    # Store with retries
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            self.index.upsert(vectors=[vector])
-                            time.sleep(1)  # Wait for consistency
-                            
-                            # Verify storage
-                            fetch_response = self.index.fetch(ids=[post['uri']])
-                            if post['uri'] in fetch_response.vectors:
-                                print(f"✓ Successfully stored post {idx} (attempt {attempt + 1})")
-                                break
-                            else:
-                                print(f"! Storage verification failed, retrying... ({attempt + 1}/{max_retries})")
-                                time.sleep(2)  # Wait longer between retries
-                        except Exception as e:
-                            print(f"Error on attempt {attempt + 1}: {str(e)}")
-                            if attempt == max_retries - 1:
-                                raise e
-                            time.sleep(2)
-                    
-                except Exception as e:
-                    print(f"Failed to process post {idx}: {str(e)}")
-                    return False
+                        vectors.append(vector)
+                        
+                    except Exception as e:
+                        print(f"Failed to process post: {str(e)}")
+                        continue
+                
+                # Store batch with retries
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        self.index.upsert(vectors=vectors)
+                        time.sleep(1)  # Wait for consistency
+                        
+                        print(f"✓ Successfully stored batch {i//BATCH_SIZE + 1}")
+                        break
+                        
+                    except Exception as e:
+                        print(f"Error on attempt {attempt + 1}: {str(e)}")
+                        if attempt == max_retries - 1:
+                            return False
+                        time.sleep(2)
             
             print("\n✓ All posts successfully stored")
             return True
