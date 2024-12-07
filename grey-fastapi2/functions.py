@@ -614,7 +614,7 @@ def get_full_thread_context(token, post_uri, client):
     try:
         # Get thread using the client
         res = client.get_post_thread(uri=post_uri)
-        print(res)  # Debugging: print the response
+        # print(res)  # Debugging: print the response
         thread = res.thread
         
         if not thread:

@@ -11,6 +11,7 @@ from functions import (
     post_trending_content, 
     check_notifications
 )
+from memory import BotMemory
 
 def main():
     # Load environment variables from .env file
@@ -60,6 +61,18 @@ def main():
     "refugee crisis", "disinformation", "AI in warfare", "deglobalization", "pandemic response"
 ]
     
+    # Define memory update interval
+    MEMORY_UPDATE_INTERVAL = 300  # Update memory every hour (3600 seconds)
+    MEMORY_RETENTION_PERIOD = 1  
+    last_memory_update = None
+    
+    # Initialize memory system ONCE
+    print("Initializing bot memory...")
+    bot_memory = BotMemory(client)
+    
+    # Get the correct bot handle from environment variables
+    BOT_HANDLE = os.getenv('BSKY_IDENTIFIER')  # Make sure this matches exactly
+    
     while True:
         try:
             current_time = datetime.now()
@@ -86,16 +99,26 @@ def main():
                     time.sleep(CHECK_INTERVAL)
                     continue
             
+            # Update memory every hour
+            if (last_memory_update is None or 
+                (current_time - last_memory_update).total_seconds() >= MEMORY_UPDATE_INTERVAL):
+                print(f"\nChecking for new posts from {BOT_HANDLE}...")
+                bot_memory.update_memory(
+                    client_atproto, 
+                    BOT_HANDLE  # Use the correct handle
+                )
+                last_memory_update = current_time
+            
             # Check notifications with OpenAI client
-            check_notifications(access_token, client, client_atproto)
+            # check_notifications(access_token, client, client_atproto)
             
             # Check if it's time to post a new thread
-            if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
-                print("\nPosting new trending thread...")
-                success = post_trending_content(access_token, bot_did, used_posts, used_topics, client,keywords)
-                if success:
-                    last_post_time = current_time
-                print(f"Thread posting result: {success}")
+            # if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
+            #     print("\nPosting new trending thread...")
+            #     success = post_trending_content(access_token, bot_did, used_posts, used_topics, client,keywords)
+            #     if success:
+            #         last_post_time = current_time
+            #     print(f"Thread posting result: {success}")
             
             # Wait before the next check
             print(f"\nWaiting {CHECK_INTERVAL} seconds before next check...")
