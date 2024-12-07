@@ -12,6 +12,8 @@ class BotMemory:
         self.client = client
         self.openai_client = OpenAI()
         self.index = self.initialize_pinecone()
+        self.is_updating = False  # Flag to track update status
+        self.last_update_time = None
     
     def initialize_pinecone(self):
         """Initialize Pinecone connection."""
@@ -213,21 +215,55 @@ class BotMemory:
             print(f"Error in store_thread_posts: {str(e)}")
             return False
 
+    def clear_old_records(self):
+        """Clear all existing records from the index."""
+        try:
+            print("\nClearing old records from memory...")
+            # Delete all vectors in the index
+            self.index.delete(delete_all=True)
+            print("✓ Successfully cleared old records")
+            return True
+        except Exception as e:
+            print(f"Error clearing old records: {str(e)}")
+            return False
+
+    def is_memory_updating(self):
+        """Check if memory update is in progress."""
+        return self.is_updating
+
     def update_memory(self, client_atproto: Client, bot_handle: str):
-        """Update memory with latest post and its thread components."""
+        """Update memory with latest 1000 posts, replacing old records."""
+        if self.is_updating:
+            print("\nMemory update already in progress. Skipping...")
+            return False
+            
         try:
             print("\nStarting memory update...")
+            self.is_updating = True
+            
+            # Clear old records first
+            if not self.clear_old_records():
+                print("Failed to clear old records. Aborting update.")
+                self.is_updating = False
+                return False
+            
+            # Get latest 1000 posts
             posts = self.get_last_post(client_atproto, bot_handle)
             
             if posts:
                 success = self.store_thread_posts(posts)
                 if success:
-                    print(f"\n✓ Successfully stored {len(posts)} posts")
+                    print(f"\n✓ Successfully stored {len(posts)} new posts")
+                    self.last_update_time = datetime.now()
                 else:
                     print("\n! Some posts may not have been stored correctly")
             else:
                 print("No posts to store")
             
+            self.is_updating = False
+            return True
+            
         except Exception as e:
             print(f"Error updating memory: {e}")
+            self.is_updating = False
             raise e

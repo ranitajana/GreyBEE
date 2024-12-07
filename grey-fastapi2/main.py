@@ -62,7 +62,7 @@ def main():
 ]
     
     # Define memory update interval
-    MEMORY_UPDATE_INTERVAL = 300  # Update memory every hour (3600 seconds)
+    MEMORY_UPDATE_INTERVAL = 86400  # 24 hours in seconds (24 * 60 * 60)
     MEMORY_RETENTION_PERIOD = 1  
     last_memory_update = None
     
@@ -102,23 +102,36 @@ def main():
             # Update memory every hour
             if (last_memory_update is None or 
                 (current_time - last_memory_update).total_seconds() >= MEMORY_UPDATE_INTERVAL):
-                print(f"\nChecking for new posts from {BOT_HANDLE}...")
-                bot_memory.update_memory(
-                    client_atproto, 
-                    BOT_HANDLE  # Use the correct handle
-                )
-                last_memory_update = current_time
+                
+                if not bot_memory.is_memory_updating():
+                    print(f"\nMemory update interval reached ({MEMORY_UPDATE_INTERVAL/3600:.1f} hours)")
+                    print(f"Last update: {last_memory_update.strftime('%Y-%m-%d %H:%M:%S') if last_memory_update else 'Never'}")
+                    print(f"Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"\nUpdating memory with latest 1000 posts from {BOT_HANDLE}...")
+                    
+                    # Start memory update
+                    bot_memory.update_memory(
+                        client_atproto, 
+                        BOT_HANDLE
+                    )
+                    last_memory_update = current_time
+                    print(f"\nNext memory update scheduled for: {(current_time + timedelta(seconds=MEMORY_UPDATE_INTERVAL)).strftime('%Y-%m-%d %H:%M:%S')}")
+                else:
+                    print("\nMemory update in progress, continuing with other tasks...")
             
-            # Check notifications with OpenAI client
-            # check_notifications(access_token, client, client_atproto)
-            
-            # Check if it's time to post a new thread
-            # if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
-            #     print("\nPosting new trending thread...")
-            #     success = post_trending_content(access_token, bot_did, used_posts, used_topics, client,keywords)
-            #     if success:
-            #         last_post_time = current_time
-            #     print(f"Thread posting result: {success}")
+            # Continue with notifications and thread posting
+            # These will use the existing memory while update is in progress
+            if not bot_memory.is_memory_updating():
+                check_notifications(access_token, client, client_atproto)
+                
+                if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
+                    print("\nPosting new trending thread...")
+                    success = post_trending_content(access_token, bot_did, used_posts, used_topics, client, keywords)
+                    if success:
+                        last_post_time = current_time
+                    print(f"Thread posting result: {success}")
+            else:
+                print("Skipping notifications and thread posting while memory updates...")
             
             # Wait before the next check
             print(f"\nWaiting {CHECK_INTERVAL} seconds before next check...")
