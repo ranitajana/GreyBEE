@@ -219,9 +219,16 @@ class BotMemory:
         """Clear all existing records from the index."""
         try:
             print("\nClearing old records from memory...")
-            # Delete all vectors in the index
-            self.index.delete(delete_all=True)
-            print("✓ Successfully cleared old records")
+            # Get list of namespaces
+            describe_index = self.index.describe_index_stats()
+            namespaces = describe_index.namespaces
+
+            if namespaces:
+                # Delete vectors if namespaces exist
+                self.index.delete(delete_all=True, namespace="")
+                print("✓ Successfully cleared old records")
+            else:
+                print("No existing records to clear")
             return True
         except Exception as e:
             print(f"Error clearing old records: {str(e)}")
