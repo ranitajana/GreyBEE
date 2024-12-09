@@ -4,6 +4,7 @@ import time
 from openai import OpenAI
 from pinecone import Pinecone
 from atproto import Client
+import pytz
 
 class BotMemory:
     def __init__(self, client):
@@ -14,6 +15,8 @@ class BotMemory:
         self.index = self.initialize_pinecone()
         self.is_updating = False  # Flag to track update status
         self.last_update_time = None
+        self.force_update_needed = False  # Add this new flag
+        self.is_update_time = False  # New flag for update time
     
     def initialize_pinecone(self):
         """Initialize Pinecone connection."""
@@ -274,3 +277,71 @@ class BotMemory:
             print(f"Error updating memory: {e}")
             self.is_updating = False
             raise e
+
+    def search_relevant_memory(self, query_text, limit=5):
+        """Search for relevant past interactions based on the query text."""
+        try:
+            print(f"\nSearching memory for context relevant to: {query_text[:100]}...")
+            
+            # Generate embedding for the query
+            query_embedding = self.openai_client.embeddings.create(
+                input=query_text,
+                model="text-embedding-3-small"
+            ).data[0].embedding
+            
+            # Search Pinecone
+            results = self.index.query(
+                vector=query_embedding,
+                top_k=limit,
+                include_metadata=True
+            )
+            
+            if not results.matches:
+                print("No relevant memories found")
+                return []
+                
+            # Format results
+            memories = []
+            for match in results.matches:
+                if match.score < 0.7:  # Similarity threshold
+                    continue
+                    
+                memories.append({
+                    'text': match.metadata['text'],
+                    'created_at': match.metadata['created_at'],
+                    'position': match.metadata['position'],
+                    'similarity': match.score
+                })
+            
+            print(f"\nFound {len(memories)} relevant memories")
+            for i, mem in enumerate(memories, 1):
+                print(f"\nMemory {i} (similarity: {mem['similarity']:.3f}):")
+                print(f"Position: {mem['position']}")
+                print(f"Text: {mem['text'][:100]}...")
+            
+            return memories
+            
+        except Exception as e:
+            print(f"Error searching memory: {str(e)}")
+            return []
+
+    def set_force_update(self):
+        """Signal that a memory update is needed."""
+        self.force_update_needed = True
+        
+    def clear_force_update(self):
+        """Clear the force update flag after update is complete."""
+        self.force_update_needed = False
+        
+    def needs_force_update(self):
+        """Check if force update is needed."""
+        return self.force_update_needed
+
+    def is_memory_update_time(self):
+        """Check if current time is 2:35 AM IST."""
+        ist_time = datetime.now().astimezone(pytz.timezone('Asia/Kolkata'))
+        return ist_time.hour == 2 and ist_time.minute == 51
+    
+    def should_stop_operations(self):
+        """Check if all operations should be stopped for memory update."""
+        return self.is_memory_update_time() or self.force_update_needed

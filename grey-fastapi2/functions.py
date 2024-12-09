@@ -191,8 +191,12 @@ def generate_response(post_content: str, client) -> Optional[str]:
         print(f"Error generating OpenAI response: {str(e)}")
         return None
 
-def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response=None):
-    """Post a reply to a specific post."""
+def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response, bot_memory):
+    """Post reply with memory update check."""
+    if bot_memory.should_stop_operations():
+        print("\nStopping reply posting - Memory update time")
+        return False
+        
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -554,14 +558,16 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
         print(f"Error in post_thread: {str(e)}")
         return False
 
-def post_trending_content(token, bot_did, used_posts, used_topics, client, keywords):
-    """Orchestrates the process of finding viral posts, generating thread content, and posting it to Bluesky.
-    Manages tracking of used posts and topics to avoid duplicates.
-    Returns True if the entire process completes successfully."""
+def post_trending_content(access_token, bot_did, used_posts, used_topics, client, keywords, bot_memory):
+    """Post trending content with memory update check."""
+    if bot_memory.should_stop_operations():
+        print("\nStopping thread posting - Memory update time")
+        return False
+        
     try:
         # Get viral posts
         print("Finding viral posts...")
-        viral_posts = get_viral_posts(token, used_posts, keywords)
+        viral_posts = get_viral_posts(access_token, used_posts, keywords)
         
         if not viral_posts:
             print("No new viral posts found")
@@ -581,7 +587,7 @@ def post_trending_content(token, bot_did, used_posts, used_topics, client, keywo
         
         # Post the thread
         print("Posting thread...")
-        success = post_thread(token, bot_did, thread_posts)
+        success = post_thread(access_token, bot_did, thread_posts)
         
         if success:
             # Update tracking sets
@@ -677,8 +683,12 @@ def get_reply_details(notification):
         print(f"Error getting reply details: {str(e)}")
         return None, None
 
-def check_notifications(token, client, client_atproto):
-    """Check and handle notifications from the last minute."""
+def check_notifications(token, client, client_atproto, bot_memory):
+    """Check notifications with memory update check."""
+    if bot_memory.should_stop_operations():
+        print("\nSkipping notifications check - Memory update time")
+        return
+        
     url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
     headers = {
         "Authorization": f"Bearer {token}"
@@ -758,8 +768,9 @@ def check_notifications(token, client, client_atproto):
                     print("\nGenerating response based on full thread context...")
                     
                     try:
+                        # First attempt without memory
                         response = client.chat.completions.create(
-                            model="gpt-4",
+                            model="gpt-4o-mini",
                             messages=[
                                 {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Keep responses concise, relevant, and friendly."},
                                 {"role": "user", "content": f"""You are responding to a conversation thread on Bluesky. Here's the complete thread:
@@ -781,11 +792,63 @@ def check_notifications(token, client, client_atproto):
                         )
                         
                         ai_response = response.choices[0].message.content.strip()
+                        
+                        # If the response seems generic or uncertain (you can customize these conditions)
+                        if any(phrase in ai_response.lower() for phrase in [
+                            "i'm not sure", "i cannot", "i don't know", "unclear",
+                            "could you clarify", "please provide more context"
+                        ]):
+                            print("\nInitial response seems uncertain, searching memory for context...")
+                            
+                            # Search memory using the entire thread context
+                            memories = bot_memory.search_relevant_memory(
+                                query_text=f"{thread_conversation}\n\nLatest message: {text}",
+                                limit=5
+                            )
+                            
+                            if memories:
+                                # Format memories for context
+                                memory_context = "\n\n".join([
+                                    f"Previous interaction ({mem['position']}):\n{mem['text']}"
+                                    for mem in memories
+                                ])
+                                
+                                # Try again with memory context
+                                response = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Use the provided memory of past interactions to give more informed and contextual responses. Keep responses concise and relevant."},
+                                        {"role": "user", "content": f"""You are responding to a conversation thread on Bluesky. Here's the complete thread:
+
+                                        {thread_conversation}
+
+                                        The latest {reason} is from @{author}: "{text}"
+
+                                        Here are relevant memories from past interactions:
+                                        {memory_context}
+
+                                        Please generate a response that:
+                                        1. Shows understanding of the entire conversation
+                                        2. Uses relevant context from past interactions
+                                        3. Directly addresses the latest message
+                                        4. Is concise (under 280 characters)
+                                        5. Is relevant and helpful
+
+                                        Generate response:"""}
+                                    ],
+                                    max_tokens=100,
+                                    temperature=0.7
+                                )
+                                
+                                ai_response = response.choices[0].message.content.strip()
+                                print("\nGenerated new response using memory context")
+                        
+                        # Continue with the existing code to post the response
                         if ai_response:
                             if len(ai_response) > 280:
                                 ai_response = ai_response[:277] + "..."
                             
-                            print(f"\nGenerated response: {ai_response}")
+                            print(f"\nFinal response: {ai_response}")
                             
                             success = post_reply(
                                 token=token,
@@ -794,7 +857,8 @@ def check_notifications(token, client, client_atproto):
                                 post_uri=uri,
                                 bot_did=get_bot_did(token, os.getenv('BSKY_IDENTIFIER')),
                                 client=client,
-                                ai_response=ai_response
+                                ai_response=ai_response,
+                                bot_memory=bot_memory
                             )
                             if success:
                                 processed_any = True

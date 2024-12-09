@@ -12,6 +12,7 @@ from functions import (
     check_notifications
 )
 from memory import BotMemory
+import pytz
 
 def main():
     # Load environment variables from .env file
@@ -76,64 +77,81 @@ def main():
     while True:
         try:
             current_time = datetime.now()
-            print(f"\n[{current_time}] Starting new check...")
-            
-            # Refresh authentication tokens if expired or not set
-            if (access_token is None or 
-                token_creation_time is None or 
-                current_time - token_creation_time >= token_expiry):
+            ist_time = current_time.astimezone(pytz.timezone('Asia/Kolkata'))
+            print(f"\n[{ist_time}] Starting new check...")
+
+            # Check if it's memory update time
+            if bot_memory.is_memory_update_time():
+                print("\n🚨 It's 2:35 AM IST - Initiating forced memory update...")
+                print("Stopping all ongoing operations...")
                 
-                print("Getting new authentication tokens...")
-                access_token, refresh_token = get_auth_token()
-                token_creation_time = current_time
+                # Force stop any ongoing operations
+                bot_memory.set_force_update()
                 
-                if not access_token:
-                    print("Failed to get authentication tokens. Waiting...")
-                    time.sleep(CHECK_INTERVAL)
-                    continue
+                # Small delay to ensure ongoing operations are stopped
+                time.sleep(5)
                 
-                # Get bot DID using the access token
-                bot_did = get_bot_did(access_token, os.getenv('BSKY_IDENTIFIER'))
-                if not bot_did:
-                    print("Failed to get bot DID. Waiting...")
-                    time.sleep(CHECK_INTERVAL)
-                    continue
-            
-            # Update memory every hour
-            if (last_memory_update is None or 
-                (current_time - last_memory_update).total_seconds() >= MEMORY_UPDATE_INTERVAL):
-                
+                # Perform memory update
                 if not bot_memory.is_memory_updating():
-                    print(f"\nMemory update interval reached ({MEMORY_UPDATE_INTERVAL/3600:.1f} hours)")
-                    print(f"Last update: {last_memory_update.strftime('%Y-%m-%d %H:%M:%S') if last_memory_update else 'Never'}")
-                    print(f"Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     print(f"\nUpdating memory with latest 1000 posts from {BOT_HANDLE}...")
-                    
-                    # Start memory update
-                    bot_memory.update_memory(
+                    success = bot_memory.update_memory(
                         client_atproto, 
                         BOT_HANDLE
                     )
-                    last_memory_update = current_time
-                    print(f"\nNext memory update scheduled for: {(current_time + timedelta(seconds=MEMORY_UPDATE_INTERVAL)).strftime('%Y-%m-%d %H:%M:%S')}")
-                else:
-                    print("\nMemory update in progress, continuing with other tasks...")
-            
-            # Continue with notifications and thread posting
-            # These will use the existing memory while update is in progress
-            if not bot_memory.is_memory_updating():
-                check_notifications(access_token, client, client_atproto)
+                    if success:
+                        bot_memory.clear_force_update()
+                        last_memory_update = current_time
+                        print(f"\n✅ Memory update complete")
+                        print(f"Next update scheduled for tomorrow at 2:35 AM IST")
+                    else:
+                        print("\n❌ Memory update failed - will retry next cycle")
+                
+                # Wait for a full minute after update attempt
+                print("\nWaiting 60 seconds before resuming normal operations...")
+                time.sleep(60)
+                continue  # Skip to next iteration
+                
+            # Regular operations only if not memory update time
+            if not bot_memory.should_stop_operations():
+                # Refresh authentication tokens if needed
+                if (access_token is None or 
+                    token_creation_time is None or 
+                    current_time - token_creation_time >= token_expiry):
+                    
+                    print("Getting new authentication tokens...")
+                    access_token, refresh_token = get_auth_token()
+                    token_creation_time = current_time
+                    
+                    if not access_token:
+                        print("Failed to get authentication tokens. Waiting...")
+                        time.sleep(CHECK_INTERVAL)
+                        continue
+                    
+                    bot_did = get_bot_did(access_token, os.getenv('BSKY_IDENTIFIER'))
+                    if not bot_did:
+                        print("Failed to get bot DID. Waiting...")
+                        time.sleep(CHECK_INTERVAL)
+                        continue
+                
+                # Regular operations
+                check_notifications(access_token, client, client_atproto, bot_memory)
                 
                 if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
                     print("\nPosting new trending thread...")
-                    success = post_trending_content(access_token, bot_did, used_posts, used_topics, client, keywords)
+                    success = post_trending_content(
+                        access_token, 
+                        bot_did, 
+                        used_posts, 
+                        used_topics, 
+                        client, 
+                        keywords,
+                        bot_memory  # Pass bot_memory to check for update time
+                    )
                     if success:
                         last_post_time = current_time
                     print(f"Thread posting result: {success}")
-            else:
-                print("Skipping notifications and thread posting while memory updates...")
             
-            # Wait before the next check
+            # Wait before next check
             print(f"\nWaiting {CHECK_INTERVAL} seconds before next check...")
             time.sleep(CHECK_INTERVAL)
             
