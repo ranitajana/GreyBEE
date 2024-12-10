@@ -5,6 +5,7 @@ import pytz
 import time
 import os
 from typing import Optional
+from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
 
 
 
@@ -192,9 +193,9 @@ def generate_response(post_content: str, client) -> Optional[str]:
         return None
 
 def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response, bot_memory):
-    """Post reply with memory update check."""
-    if bot_memory.should_stop_operations():
-        print("\nStopping reply posting - Memory update time")
+    """Post reply with force stop check."""
+    if bot_memory.should_force_stop():
+        print(f"\n🛑 FORCE STOP: Memory update time - Reply cancelled")
         return False
         
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
@@ -559,12 +560,13 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
         return False
 
 def post_trending_content(access_token, bot_did, used_posts, used_topics, client, keywords, bot_memory):
-    """Post trending content with memory update check."""
-    if bot_memory.should_stop_operations():
-        print("\nStopping thread posting - Memory update time")
-        return False
-        
+    """Post trending content with force stop check."""
     try:
+        # Initial check
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - Thread posting cancelled")
+            return False
+
         # Get viral posts
         print("Finding viral posts...")
         viral_posts = get_viral_posts(access_token, used_posts, keywords)
@@ -684,17 +686,18 @@ def get_reply_details(notification):
         return None, None
 
 def check_notifications(token, client, client_atproto, bot_memory):
-    """Check notifications with memory update check."""
-    if bot_memory.should_stop_operations():
-        print("\nSkipping notifications check - Memory update time")
-        return
-        
-    url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-    
+    """Check notifications with force stop check."""
     try:
+        # Initial check
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - Notifications check cancelled")
+            return
+
+        url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
         # Calculate timestamp for 1 minute ago
         one_minute_ago = datetime.now(pytz.UTC) - timedelta(minutes=1)
         
@@ -889,3 +892,33 @@ def check_notifications(token, client, client_atproto, bot_memory):
             
     except Exception as e:
         print(f"Error checking notifications: {str(e)}")
+
+def generate_ai_response(client, thread_context, author, text, reason, bot_memory):
+    """Generate AI response with force stop checks."""
+    try:
+        # Check before starting
+        if bot_memory.should_force_stop():
+            return None
+
+        # First attempt without memory
+        if bot_memory.should_force_stop():
+            return None
+            
+        response = client.chat.completions.create(...)
+        
+        # Check before memory search
+        if bot_memory.should_force_stop():
+            return None
+            
+        memories = bot_memory.search_relevant_memory(...)
+        
+        # Check before second attempt
+        if bot_memory.should_force_stop():
+            return None
+            
+        # ... rest of function ...
+        return response  # or whatever the function should return
+        
+    except Exception as e:
+        print(f"Error generating AI response: {str(e)}")
+        return None

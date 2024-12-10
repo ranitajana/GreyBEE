@@ -13,6 +13,7 @@ from functions import (
 )
 from memory import BotMemory
 import pytz
+from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
 
 def main():
     # Load environment variables from .env file
@@ -77,42 +78,42 @@ def main():
     while True:
         try:
             current_time = datetime.now()
-            ist_time = current_time.astimezone(pytz.timezone('Asia/Kolkata'))
+            ist_time = current_time.astimezone(MEMORY_UPDATE_TIMEZONE)
             print(f"\n[{ist_time}] Starting new check...")
 
-            # Check if it's memory update time
+            # Check for memory update time first
             if bot_memory.is_memory_update_time():
-                print("\n🚨 It's 2:35 AM IST - Initiating forced memory update...")
-                print("Stopping all ongoing operations...")
+                print(f"\n🚨 MEMORY UPDATE TIME - {MEMORY_UPDATE_TIME.hour:02d}:{MEMORY_UPDATE_TIME.minute:02d} {MEMORY_UPDATE_TIMEZONE.zone}")
+                print("=======================================")
+                print("FORCING ALL OPERATIONS TO STOP")
+                print("=======================================")
                 
-                # Force stop any ongoing operations
-                bot_memory.set_force_update()
+                # Set force stop flag
+                bot_memory.force_stop_needed = True
                 
-                # Small delay to ensure ongoing operations are stopped
+                # Wait for any ongoing operations to complete their force stop
                 time.sleep(5)
                 
                 # Perform memory update
                 if not bot_memory.is_memory_updating():
-                    print(f"\nUpdating memory with latest 1000 posts from {BOT_HANDLE}...")
+                    print("\nStarting memory update process...")
                     success = bot_memory.update_memory(
                         client_atproto, 
                         BOT_HANDLE
                     )
                     if success:
-                        bot_memory.clear_force_update()
+                        print("\n✅ Memory update complete")
+                        bot_memory.clear_force_stop()
                         last_memory_update = current_time
-                        print(f"\n✅ Memory update complete")
-                        print(f"Next update scheduled for tomorrow at 2:35 AM IST")
                     else:
-                        print("\n❌ Memory update failed - will retry next cycle")
-                
-                # Wait for a full minute after update attempt
-                print("\nWaiting 60 seconds before resuming normal operations...")
-                time.sleep(60)
-                continue  # Skip to next iteration
-                
-            # Regular operations only if not memory update time
-            if not bot_memory.should_stop_operations():
+                        print("\n❌ Memory update failed")
+                    
+                    # Wait before resuming operations
+                    time.sleep(60)
+                    continue
+            
+            # Regular operations
+            if not bot_memory.should_force_stop():
                 # Refresh authentication tokens if needed
                 if (access_token is None or 
                     token_creation_time is None or 

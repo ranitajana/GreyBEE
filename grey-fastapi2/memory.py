@@ -5,6 +5,7 @@ from openai import OpenAI
 from pinecone import Pinecone
 from atproto import Client
 import pytz
+from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
 
 class BotMemory:
     def __init__(self, client):
@@ -17,6 +18,7 @@ class BotMemory:
         self.last_update_time = None
         self.force_update_needed = False  # Add this new flag
         self.is_update_time = False  # New flag for update time
+        self.force_stop_needed = False  # New flag for immediate stops
     
     def initialize_pinecone(self):
         """Initialize Pinecone connection."""
@@ -242,33 +244,29 @@ class BotMemory:
         return self.is_updating
 
     def update_memory(self, client_atproto: Client, bot_handle: str):
-        """Update memory with latest 1000 posts, replacing old records."""
+        """Update memory with latest 1000 posts."""
         if self.is_updating:
-            print("\nMemory update already in progress. Skipping...")
             return False
-            
+        
         try:
             print("\nStarting memory update...")
             self.is_updating = True
+            self.force_stop_needed = False  # Clear force stop flag during update
             
-            # Clear old records first
+            # Clear old records
             if not self.clear_old_records():
-                print("Failed to clear old records. Aborting update.")
                 self.is_updating = False
                 return False
             
-            # Get latest 1000 posts
+            # Get and store new posts
             posts = self.get_last_post(client_atproto, bot_handle)
-            
             if posts:
                 success = self.store_thread_posts(posts)
                 if success:
-                    print(f"\n✓ Successfully stored {len(posts)} new posts")
+                    print(f"\n✅ Successfully stored {len(posts)} new posts")
                     self.last_update_time = datetime.now()
                 else:
-                    print("\n! Some posts may not have been stored correctly")
-            else:
-                print("No posts to store")
+                    print("\n❌ Some posts may not have been stored correctly")
             
             self.is_updating = False
             return True
@@ -338,10 +336,24 @@ class BotMemory:
         return self.force_update_needed
 
     def is_memory_update_time(self):
-        """Check if current time is 2:35 AM IST."""
-        ist_time = datetime.now().astimezone(pytz.timezone('Asia/Kolkata'))
-        return ist_time.hour == 2 and ist_time.minute == 51
+        """Check if current time matches the configured memory update time."""
+        current_time = datetime.now().astimezone(MEMORY_UPDATE_TIMEZONE)
+        return (current_time.hour == MEMORY_UPDATE_TIME.hour and 
+                current_time.minute == MEMORY_UPDATE_TIME.minute)
     
     def should_stop_operations(self):
         """Check if all operations should be stopped for memory update."""
         return self.is_memory_update_time() or self.force_update_needed
+
+    def should_force_stop(self):
+        """Check if immediate stop is needed."""
+        current_time = datetime.now().astimezone(MEMORY_UPDATE_TIMEZONE)
+        is_update_time = (current_time.hour == MEMORY_UPDATE_TIME.hour and 
+                         current_time.minute == MEMORY_UPDATE_TIME.minute)
+        if is_update_time:
+            self.force_stop_needed = True
+        return self.force_stop_needed
+    
+    def clear_force_stop(self):
+        """Clear the force stop flag."""
+        self.force_stop_needed = False
