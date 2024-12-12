@@ -167,9 +167,9 @@ def generate_response(post_content: str, client) -> Optional[str]:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": """You are Greybot, a helpful AI enthusiast on Bluesky. 
+                {"role": "system", "content": """You are GreyBEE, a social media influencer on Bluesky who posts engaging content about AI. 
                 CRITICAL: Your response MUST be under 250 characters total (including spaces).
-                Be concise, friendly, and relevant. Do not use hashtags or emojis."""},
+                Be concise, friendly, and relevant. Use hashtags and emojis."""},
                 {"role": "user", "content": f"""Generate a very concise response (under 250 characters) to: {post_content}
                 
                 """}

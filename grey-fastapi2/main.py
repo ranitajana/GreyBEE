@@ -39,29 +39,34 @@ def main():
     THREAD_POST_INTERVAL = 1800  # 30 minutes in seconds
     CHECK_INTERVAL = 60  # 1 minute in seconds
     last_post_time = None
-    #List of keywords to search for viral posts
+    
+    # List of keywords to search for viral posts on Artificial Intelligence
     keywords = [
-    # General World Politics
-    "diplomacy", "international relations", "geopolitics", "foreign policy", "global governance",
-    # Political Systems
-    "democracy", "authoritarianism", "socialism", "capitalism", "communism",
-    # International Organizations
-    "UN", "NATO", "EU", "WHO", "WTO",
-    # Global Issues
-    "climate change", "terrorism", "human rights", "nuclear proliferation", "cybersecurity",
-    # Economic Concepts
-    "globalization", "free trade", "protectionism", "sanctions", "economic integration",
-    # Diplomatic Terms
-    "summit", "treaty", "alliance", "bilateral relations", "multilateralism",
-    # Political Ideologies
-    "liberalism", "conservatism", "nationalism", "populism", "environmentalism",
-    # Power Dynamics
-    "superpower", "hegemony", "balance of power", "soft power", "hard power",
-    # Conflict and Security
-    "war", "peace", "disarmament", "peacekeeping", "counterterrorism",
-    # Trending Topics
-    "refugee crisis", "disinformation", "AI in warfare", "deglobalization", "pandemic response"
-]
+    # General AI Concepts
+    "artificial intelligence", "machine learning", "deep learning", "neural networks", "natural language processing",
+    
+    # AI Applications
+    "computer vision", "speech recognition", "robotics", "autonomous vehicles", "AI in healthcare",
+    
+    # Ethical Considerations
+    "AI ethics", "bias in AI", "transparency", "accountability", "privacy concerns",
+    
+    # AI Technologies
+    "reinforcement learning", "supervised learning", "unsupervised learning", "generative adversarial networks", "edge computing",
+    
+    # Industry Impact
+    "AI in business", "AI in finance", "AI in education", "AI in marketing", "AI and job displacement",
+    
+    # AI Research and Development
+    "AI algorithms", "data science", "big data", "cloud computing", "quantum computing",
+    
+    # Future of AI
+    "singularity", "AGI (Artificial General Intelligence)", "AI governance", "human-AI collaboration", "future of work",
+    
+    # AI Trends
+    "AI startups", "AI funding", "AI conferences", "open-source AI", "AI regulations"
+    ]
+
     
     # Define memory update interval
     MEMORY_UPDATE_INTERVAL = 86400  # 24 hours in seconds (24 * 60 * 60)
