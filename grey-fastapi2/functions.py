@@ -5,6 +5,11 @@ import pytz
 import time
 import os
 from typing import Optional
+from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
+import feedparser
+from bs4 import BeautifulSoup
+import json
+import hashlib
 
 
 
@@ -166,9 +171,9 @@ def generate_response(post_content: str, client) -> Optional[str]:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": """You are Greybot, a helpful AI enthusiast on Bluesky. 
+                {"role": "system", "content": """You are GreyBEE, a social media influencer on Bluesky who posts engaging content about AI. 
                 CRITICAL: Your response MUST be under 250 characters total (including spaces).
-                Be concise, friendly, and relevant. Do not use hashtags or emojis."""},
+                Be concise, friendly, and relevant. Use hashtags and emojis."""},
                 {"role": "user", "content": f"""Generate a very concise response (under 250 characters) to: {post_content}
                 
                 """}
@@ -191,8 +196,12 @@ def generate_response(post_content: str, client) -> Optional[str]:
         print(f"Error generating OpenAI response: {str(e)}")
         return None
 
-def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response=None):
-    """Post a reply to a specific post."""
+def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response, bot_memory):
+    """Post reply with force stop check."""
+    if bot_memory.should_force_stop():
+        print(f"\n🛑 FORCE STOP: Memory update time - Reply cancelled")
+        return False
+        
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -474,7 +483,116 @@ def generate_thread_content(viral_posts: list, used_topics: set, client) -> list
         print(f"Error generating thread content: {str(e)}")
         return None
 
-def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
+def upload_image_to_bsky(token: str, image_url: str) -> Optional[dict]:
+    """Download image from URL and upload to Bluesky's blob storage."""
+    try:
+        # Download image
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        img_response = requests.get(image_url, headers=headers)
+        if img_response.status_code != 200:
+            print(f"Failed to download image: {img_response.status_code}")
+            return None
+
+        # Determine content type
+        content_type = img_response.headers.get('content-type', 'image/jpeg')
+        
+        # Upload to Bluesky
+        upload_url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type
+        }
+        
+        upload_response = requests.post(
+            upload_url,
+            headers=headers,
+            data=img_response.content
+        )
+
+        if upload_response.status_code == 200:
+            blob = upload_response.json().get('blob')
+            print("Successfully uploaded image to Bluesky")
+            return blob
+        else:
+            print(f"Failed to upload image: {upload_response.status_code}")
+            return None
+
+    except Exception as e:
+        print(f"Error uploading image: {str(e)}")
+        return None
+
+def extract_article_content(url):
+    """Extract main content and image from an article URL."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted elements
+        for elem in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            elem.decompose()
+        
+        # Try multiple content extraction strategies
+        content = None
+        
+        # Strategy 1: Look for article tag
+        if not content:
+            article = soup.find('article')
+            if article:
+                content = ' '.join([p.text.strip() for p in article.find_all('p')])
+        
+        # Strategy 2: Look for common content class names
+        if not content:
+            content_classes = ['content', 'article-content', 'post-content', 'entry-content']
+            for class_name in content_classes:
+                content_div = soup.find(class_=class_name)
+                if content_div:
+                    content = ' '.join([p.text.strip() for p in content_div.find_all('p')])
+                    break
+        
+        # Strategy 3: Fall back to meta description
+        if not content:
+            meta_desc = soup.find('meta', {'name': 'description'}) or soup.find('meta', {'property': 'og:description'})
+            if meta_desc:
+                content = meta_desc.get('content', '')
+        
+        # Image extraction (existing code)
+        image_url = None
+        image_candidates = [
+            soup.find('meta', property='og:image'),
+            soup.find('meta', property='twitter:image'),
+            soup.find('meta', property='image'),
+            soup.find('article').find('img') if soup.find('article') else None,
+            soup.find(class_=['featured-image', 'article-image', 'post-image'])
+        ]
+        
+        for candidate in image_candidates:
+            if candidate:
+                image_url = (candidate.get('content') or candidate.get('src'))
+                if image_url:
+                    if not image_url.startswith(('http://', 'https://')):
+                        base_url = '/'.join(url.split('/')[:3])
+                        image_url = f"{base_url}{image_url if image_url.startswith('/') else f'/{image_url}'}"
+                    break
+        
+        if not content and not image_url:
+            print(f"Failed to extract any content or image from {url}")
+            return None, None
+            
+        return content, image_url
+        
+    except Exception as e:
+        print(f"Error extracting article content: {str(e)}")
+        return None, None
+
+def post_thread(token: str, bot_did: str, thread_posts: list, embed_url: Optional[str] = None, image_url: Optional[str] = None) -> bool:
     """Post a series of connected posts as a thread on Bluesky."""
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
@@ -483,85 +601,110 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
     }
     
     try:
+        # Handle image upload if provided
+        image_blob = None
+        if image_url:
+            print(f"Uploading image from: {image_url}")
+            image_blob = upload_image_to_bsky(token, image_url)
+            if not image_blob:
+                print("Failed to upload image, continuing with link-only embed")
+
         root_uri = None
         root_cid = None
         parent_uri = None
         parent_cid = None
         
         for i, post_text in enumerate(thread_posts):
-            # Add retry logic for 502 errors
-            max_retries = 3
-            retry_count = 0
+            data = {
+                "repo": bot_did,
+                "collection": "app.bsky.feed.post",
+                "record": {
+                    "text": post_text,
+                    "$type": "app.bsky.feed.post",
+                    "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
+                }
+            }
             
-            while retry_count < max_retries:
-                try:
-                    data = {
-                        "repo": bot_did,
-                        "collection": "app.bsky.feed.post",
-                        "record": {
-                            "text": post_text,
-                            "$type": "app.bsky.feed.post",
-                            "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
-                        }
+            # Add embed for first post if embed_url is provided
+            if i == 0 and embed_url:
+                embed_data = {
+                    "$type": "app.bsky.embed.external",
+                    "external": {
+                        "uri": embed_url,
+                        "title": thread_posts[0],
+                        "description": ""
                     }
-                    
-                    if root_uri and root_cid:
-                        data["record"]["reply"] = {
-                            "root": {
-                                "uri": root_uri,
-                                "cid": root_cid
-                            },
-                            "parent": {
-                                "uri": parent_uri,
-                                "cid": parent_cid
-                            }
-                        }
-                    
-                    response = requests.post(url, headers=headers, json=data)
-                    
-                    if response.status_code == 200:
-                        print(f"Posted thread part {i+1}/{len(thread_posts)}")
-                        
-                        if i == 0:  # First post becomes the root
-                            root_uri = response.json()['uri']
-                            root_cid = response.json()['cid']
-                        
-                        parent_uri = response.json()['uri']
-                        parent_cid = response.json()['cid']
-                        
-                        time.sleep(2)  # Small delay between posts
-                        break  # Success, exit retry loop
-                        
-                    elif response.status_code == 502:
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
-                            time.sleep(5)  # Wait 5 seconds before retrying
-                        else:
-                            print(f"Failed to post thread part {i+1} after {max_retries} attempts")
-                            return False
-                    else:
-                        print(f"Failed to post thread part {i+1}: {response.status_code} - {response.text}")
-                        return False
-                        
-                except Exception as e:
-                    print(f"Error posting thread part {i+1}: {str(e)}")
+                }
+                
+                # Add image to embed if available
+                if image_blob:
+                    embed_data["external"]["thumb"] = image_blob
+                
+                data["record"]["embed"] = embed_data
+                print(f"Adding link preview with image for URL: {embed_url}")
+            
+            # Add thread reply data if not first post
+            if root_uri and root_cid:
+                data["record"]["reply"] = {
+                    "root": {
+                        "uri": root_uri,
+                        "cid": root_cid
+                    },
+                    "parent": {
+                        "uri": parent_uri,
+                        "cid": parent_cid
+                    }
+                }
+            
+            # Wait before posting first post to ensure proper embed
+            if i == 0:
+                print("Waiting for link preview to generate...")
+                time.sleep(10)
+            
+            response = requests.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                print(f"Posted thread part {i+1}/{len(thread_posts)}")
+                
+                if i == 0:  # First post becomes the root
+                    root_uri = response.json()['uri']
+                    root_cid = response.json()['cid']
+                
+                parent_uri = response.json()['uri']
+                parent_cid = response.json()['cid']
+                
+                time.sleep(2)  # Small delay between posts
+                break  # Success, exit retry loop
+                
+            elif response.status_code == 502:
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
+                    time.sleep(5)
+                else:
+                    print(f"Failed to post thread part {i+1} after {max_retries} attempts")
                     return False
-        
+            else:
+                print(f"Failed to post thread part {i+1}: {response.status_code} - {response.text}")
+                return False
+                
         return True
         
     except Exception as e:
         print(f"Error in post_thread: {str(e)}")
         return False
 
-def post_trending_content(token, bot_did, used_posts, used_topics, client, keywords):
-    """Orchestrates the process of finding viral posts, generating thread content, and posting it to Bluesky.
-    Manages tracking of used posts and topics to avoid duplicates.
-    Returns True if the entire process completes successfully."""
+def post_trending_content(access_token, bot_did, used_posts, used_topics, client, keywords, bot_memory):
+    """Post trending content with force stop check."""
     try:
+        # Initial check
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - Thread posting cancelled")
+            return False
+
         # Get viral posts
         print("Finding viral posts...")
-        viral_posts = get_viral_posts(token, used_posts, keywords)
+        viral_posts = get_viral_posts(access_token, used_posts, keywords)
         
         if not viral_posts:
             print("No new viral posts found")
@@ -581,7 +724,7 @@ def post_trending_content(token, bot_did, used_posts, used_topics, client, keywo
         
         # Post the thread
         print("Posting thread...")
-        success = post_thread(token, bot_did, thread_posts)
+        success = post_thread(access_token, bot_did, thread_posts)
         
         if success:
             # Update tracking sets
@@ -614,7 +757,7 @@ def get_full_thread_context(token, post_uri, client):
     try:
         # Get thread using the client
         res = client.get_post_thread(uri=post_uri)
-        print(res)  # Debugging: print the response
+        # print(res)  # Debugging: print the response
         thread = res.thread
         
         if not thread:
@@ -677,14 +820,19 @@ def get_reply_details(notification):
         print(f"Error getting reply details: {str(e)}")
         return None, None
 
-def check_notifications(token, client, client_atproto):
-    """Check and handle notifications from the last minute."""
-    url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-    
+def check_notifications(token, client, client_atproto, bot_memory):
+    """Check notifications with force stop check."""
     try:
+        # Initial check
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - Notifications check cancelled")
+            return
+
+        url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
         # Calculate timestamp for 1 minute ago
         one_minute_ago = datetime.now(pytz.UTC) - timedelta(minutes=1)
         
@@ -758,8 +906,9 @@ def check_notifications(token, client, client_atproto):
                     print("\nGenerating response based on full thread context...")
                     
                     try:
+                        # First attempt without memory
                         response = client.chat.completions.create(
-                            model="gpt-4",
+                            model="gpt-4o-mini",
                             messages=[
                                 {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Keep responses concise, relevant, and friendly."},
                                 {"role": "user", "content": f"""You are responding to a conversation thread on Bluesky. Here's the complete thread:
@@ -781,11 +930,63 @@ def check_notifications(token, client, client_atproto):
                         )
                         
                         ai_response = response.choices[0].message.content.strip()
+                        
+                        # If the response seems generic or uncertain (you can customize these conditions)
+                        if any(phrase in ai_response.lower() for phrase in [
+                            "i'm not sure", "i cannot", "i don't know", "unclear",
+                            "could you clarify", "please provide more context"
+                        ]):
+                            print("\nInitial response seems uncertain, searching memory for context...")
+                            
+                            # Search memory using the entire thread context
+                            memories = bot_memory.search_relevant_memory(
+                                query_text=f"{thread_conversation}\n\nLatest message: {text}",
+                                limit=5
+                            )
+                            
+                            if memories:
+                                # Format memories for context
+                                memory_context = "\n\n".join([
+                                    f"Previous interaction ({mem['position']}):\n{mem['text']}"
+                                    for mem in memories
+                                ])
+                                
+                                # Try again with memory context
+                                response = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Use the provided memory of past interactions to give more informed and contextual responses. Keep responses concise and relevant."},
+                                        {"role": "user", "content": f"""You are responding to a conversation thread on Bluesky. Here's the complete thread:
+
+                                        {thread_conversation}
+
+                                        The latest {reason} is from @{author}: "{text}"
+
+                                        Here are relevant memories from past interactions:
+                                        {memory_context}
+
+                                        Please generate a response that:
+                                        1. Shows understanding of the entire conversation
+                                        2. Uses relevant context from past interactions
+                                        3. Directly addresses the latest message
+                                        4. Is concise (under 280 characters)
+                                        5. Is relevant and helpful
+
+                                        Generate response:"""}
+                                    ],
+                                    max_tokens=100,
+                                    temperature=0.7
+                                )
+                                
+                                ai_response = response.choices[0].message.content.strip()
+                                print("\nGenerated new response using memory context")
+                        
+                        # Continue with the existing code to post the response
                         if ai_response:
                             if len(ai_response) > 280:
                                 ai_response = ai_response[:277] + "..."
                             
-                            print(f"\nGenerated response: {ai_response}")
+                            print(f"\nFinal response: {ai_response}")
                             
                             success = post_reply(
                                 token=token,
@@ -794,7 +995,8 @@ def check_notifications(token, client, client_atproto):
                                 post_uri=uri,
                                 bot_did=get_bot_did(token, os.getenv('BSKY_IDENTIFIER')),
                                 client=client,
-                                ai_response=ai_response
+                                ai_response=ai_response,
+                                bot_memory=bot_memory
                             )
                             if success:
                                 processed_any = True
@@ -825,3 +1027,264 @@ def check_notifications(token, client, client_atproto):
             
     except Exception as e:
         print(f"Error checking notifications: {str(e)}")
+
+def generate_ai_response(client, thread_context, author, text, reason, bot_memory):
+    """Generate AI response with force stop checks."""
+    try:
+        # Check before starting
+        if bot_memory.should_force_stop():
+            return None
+
+        # First attempt without memory
+        if bot_memory.should_force_stop():
+            return None
+            
+        response = client.chat.completions.create(...)
+        
+        # Check before memory search
+        if bot_memory.should_force_stop():
+            return None
+            
+        memories = bot_memory.search_relevant_memory(...)
+        
+        # Check before second attempt
+        if bot_memory.should_force_stop():
+            return None
+            
+        # ... rest of function ...
+        return response  # or whatever the function should return
+        
+    except Exception as e:
+        print(f"Error generating AI response: {str(e)}")
+        return None
+
+def fetch_ai_news():
+    """Fetch AI news from multiple reliable sources."""
+    news_sources = {
+        'MIT Technology Review': {
+            'url': 'https://www.technologyreview.com/topic/artificial-intelligence/feed',
+            'type': 'rss'
+        },
+        'TechCrunch AI': {
+            'url': 'https://techcrunch.com/category/artificial-intelligence/feed',
+            'type': 'rss'
+        },
+        'VentureBeat AI': {
+            'url': 'https://venturebeat.com/category/ai/feed/',
+            'type': 'rss'
+        },
+        'Wired AI': {
+            'url': 'https://www.wired.com/tag/artificial-intelligence/feed',
+            'type': 'rss'
+        }
+    }
+    
+    news_items = []
+    
+    for source_name, source_info in news_sources.items():
+        try:
+            if source_info['type'] == 'rss':
+                feed = feedparser.parse(source_info['url'])
+                for entry in feed.entries[:5]:  # Get 5 most recent entries
+                    # Create unique ID for deduplication
+                    content_hash = hashlib.md5(
+                        f"{entry.title}{entry.link}".encode()
+                    ).hexdigest()
+                    
+                    # Extract main image if available
+                    image_url = None
+                    if hasattr(entry, 'content') and entry.content:
+                        soup = BeautifulSoup(entry.content[0].value, 'html.parser')
+                        img = soup.find('img')
+                        if img and img.get('src'):
+                            image_url = img['src']
+                    
+                    news_items.append({
+                        'id': content_hash,
+                        'title': entry.title,
+                        'link': entry.link,
+                        'summary': entry.summary,
+                        'published': entry.published,
+                        'source': source_name,
+                        'image_url': image_url
+                    })
+                    
+        except Exception as e:
+            print(f"Error fetching from {source_name}: {str(e)}")
+    
+    return sorted(news_items, key=lambda x: x['published'], reverse=True)
+
+def generate_news_thread(news_item, article_content, client):
+    """Generate an engaging thread about an AI news article."""
+    try:
+        thread_response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Make sure you're using the correct model name
+            messages=[
+                {"role": "system", "content": """You are an AI expert creating engaging threads about AI news.
+                You MUST create EXACTLY 4 posts that break down the news article.
+                
+                Required format:
+                1. First post: Attention-grabbing headline/intro (NO link - it will be auto-embedded)
+                2. Second post: Key details or main impact of the news
+                3. Third post: Analysis or interesting implications
+                4. Fourth post: Conclusion with 2-3 relevant hashtags
+                
+                STRICT REQUIREMENTS:
+                - You MUST generate exactly 4 posts
+                - Each post MUST be under 280 characters
+                - Include 1-2 relevant emojis per post
+                - DO NOT include URLs or links
+                - Last post MUST end with hashtags
+                
+                Example format:
+                1. Breaking: [Catchy headline] 🚀
+                2. Here's what makes this significant... 💡
+                3. The implications are... 🔮
+                4. Final thoughts... #AI #Tech #Innovation"""},
+                {"role": "user", "content": f"""Create a 4-post thread about this AI news:
+                
+                Title: {news_item['title']}
+                
+                Summary: {news_item['summary']}
+                
+                Additional Content: {article_content[:1500] if article_content else ''}
+                
+                Remember: MUST be exactly 4 posts, each under 280 characters!"""}
+            ],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        
+        # Process and clean the generated posts
+        content = thread_response.choices[0].message.content.strip()
+        
+        # Split content by numbered markers and clean
+        thread_posts = []
+        for line in content.split('\n'):
+            line = line.strip()
+            if line and any(line.startswith(f"{i}.") for i in range(1, 5)):
+                # Remove the number and leading space
+                post = line[2:].strip()
+                if len(post) > 280:
+                    post = post[:277] + "..."
+                thread_posts.append(post)
+        
+        # Validate we got exactly 4 posts
+        if len(thread_posts) != 4:
+            print(f"Error: Generated {len(thread_posts)} posts instead of required 4")
+            print("Raw content received:")
+            print(content)
+            
+            # Attempt to fix by padding or truncating
+            if len(thread_posts) < 4:
+                # Pad with generic posts if we don't have enough
+                while len(thread_posts) < 4:
+                    if len(thread_posts) == 2:
+                        thread_posts.append(f"What makes this particularly interesting is its potential impact on the AI industry... 🔮")
+                    elif len(thread_posts) == 3:
+                        thread_posts.append(f"Stay tuned for more updates! #AI #Tech #Innovation 🚀")
+            elif len(thread_posts) > 4:
+                # Truncate to 4 posts if we have too many
+                thread_posts = thread_posts[:4]
+            
+            print("\nFixed thread posts:")
+            for i, post in enumerate(thread_posts, 1):
+                print(f"{i}. {post}")
+        
+        return thread_posts if len(thread_posts) == 4 else None
+        
+    except Exception as e:
+        print(f"Error generating news thread: {str(e)}")
+        print("Full error details:", str(e))
+        return None
+
+def post_ai_news(access_token, bot_did, used_posts, client, bot_memory):
+    """Post AI news content with duplicate checking."""
+    try:
+        # Check for force stop
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - News posting cancelled")
+            return False
+        
+        # Fetch recent AI news
+        print("\nFetching recent AI news...")
+        news_items = fetch_ai_news()
+        
+        if not news_items:
+            print("No news items found")
+            return False
+        
+        # Find first unposted news item
+        for news_item in news_items:
+            # Add debug print for article ID
+            print(f"\nChecking news item ID: {news_item['id']}")
+            print(f"Is article already used? {news_item['id'] in used_posts}")
+            
+            if news_item['id'] not in used_posts:
+                print(f"\nProcessing news: {news_item['title']}")
+                
+                # Extract full article content and image
+                article_content, article_image = extract_article_content(news_item['link'])
+                if not article_content:
+                    print("Failed to extract article content")
+                
+                # Generate thread content
+                thread_posts = generate_news_thread(news_item, article_content, client)
+                
+                if thread_posts:
+                    print(f"\nGenerated {len(thread_posts)} posts for news thread:")
+                    for i, post in enumerate(thread_posts, 1):
+                        print(f"\nPost {i}:")
+                        print(post)
+                    
+                    # Post the thread with link preview and image
+                    success = post_thread(
+                        access_token, 
+                        bot_did, 
+                        thread_posts, 
+                        embed_url=news_item['link'],
+                        image_url=article_image
+                    )
+                    
+                    if success:
+                        used_posts.add(news_item['id'])
+                        print(f"\n✅ Successfully posted news thread about: {news_item['title']}")
+                        return True
+                    else:
+                        print("\n❌ Failed to post news thread")
+                else:
+                    print("Failed to generate thread posts")
+                
+                break
+        
+        print("\nNo new AI news items to post")
+        return False
+        
+    except Exception as e:
+        print(f"Error posting AI news: {str(e)}")
+        return False
+
+def save_used_content(used_posts, used_topics, filename='used_content.json'):
+    """Save used content to prevent duplicates across restarts."""
+    try:
+        content = {
+            'posts': list(used_posts),
+            'topics': list(used_topics)
+        }
+        with open(filename, 'w') as f:
+            json.dump(content, f)
+        print(f"Saved {len(used_posts)} used posts and {len(used_topics)} used topics")
+    except Exception as e:
+        print(f"Error saving used content: {str(e)}")
+
+def load_used_content(filename='used_content.json'):
+    """Load previously used content."""
+    try:
+        with open(filename, 'r') as f:
+            content = json.load(f)
+        return set(content.get('posts', [])), set(content.get('topics', []))
+    except FileNotFoundError:
+        return set(), set()
+    except Exception as e:
+        print(f"Error loading used content: {str(e)}")
+        return set(), set()
