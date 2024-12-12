@@ -483,7 +483,116 @@ def generate_thread_content(viral_posts: list, used_topics: set, client) -> list
         print(f"Error generating thread content: {str(e)}")
         return None
 
-def post_thread(token: str, bot_did: str, thread_posts: list, embed_url: Optional[str] = None) -> bool:
+def upload_image_to_bsky(token: str, image_url: str) -> Optional[dict]:
+    """Download image from URL and upload to Bluesky's blob storage."""
+    try:
+        # Download image
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        img_response = requests.get(image_url, headers=headers)
+        if img_response.status_code != 200:
+            print(f"Failed to download image: {img_response.status_code}")
+            return None
+
+        # Determine content type
+        content_type = img_response.headers.get('content-type', 'image/jpeg')
+        
+        # Upload to Bluesky
+        upload_url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type
+        }
+        
+        upload_response = requests.post(
+            upload_url,
+            headers=headers,
+            data=img_response.content
+        )
+
+        if upload_response.status_code == 200:
+            blob = upload_response.json().get('blob')
+            print("Successfully uploaded image to Bluesky")
+            return blob
+        else:
+            print(f"Failed to upload image: {upload_response.status_code}")
+            return None
+
+    except Exception as e:
+        print(f"Error uploading image: {str(e)}")
+        return None
+
+def extract_article_content(url):
+    """Extract main content and image from an article URL."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted elements
+        for elem in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            elem.decompose()
+        
+        # Try multiple content extraction strategies
+        content = None
+        
+        # Strategy 1: Look for article tag
+        if not content:
+            article = soup.find('article')
+            if article:
+                content = ' '.join([p.text.strip() for p in article.find_all('p')])
+        
+        # Strategy 2: Look for common content class names
+        if not content:
+            content_classes = ['content', 'article-content', 'post-content', 'entry-content']
+            for class_name in content_classes:
+                content_div = soup.find(class_=class_name)
+                if content_div:
+                    content = ' '.join([p.text.strip() for p in content_div.find_all('p')])
+                    break
+        
+        # Strategy 3: Fall back to meta description
+        if not content:
+            meta_desc = soup.find('meta', {'name': 'description'}) or soup.find('meta', {'property': 'og:description'})
+            if meta_desc:
+                content = meta_desc.get('content', '')
+        
+        # Image extraction (existing code)
+        image_url = None
+        image_candidates = [
+            soup.find('meta', property='og:image'),
+            soup.find('meta', property='twitter:image'),
+            soup.find('meta', property='image'),
+            soup.find('article').find('img') if soup.find('article') else None,
+            soup.find(class_=['featured-image', 'article-image', 'post-image'])
+        ]
+        
+        for candidate in image_candidates:
+            if candidate:
+                image_url = (candidate.get('content') or candidate.get('src'))
+                if image_url:
+                    if not image_url.startswith(('http://', 'https://')):
+                        base_url = '/'.join(url.split('/')[:3])
+                        image_url = f"{base_url}{image_url if image_url.startswith('/') else f'/{image_url}'}"
+                    break
+        
+        if not content and not image_url:
+            print(f"Failed to extract any content or image from {url}")
+            return None, None
+            
+        return content, image_url
+        
+    except Exception as e:
+        print(f"Error extracting article content: {str(e)}")
+        return None, None
+
+def post_thread(token: str, bot_did: str, thread_posts: list, embed_url: Optional[str] = None, image_url: Optional[str] = None) -> bool:
     """Post a series of connected posts as a thread on Bluesky."""
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
@@ -492,87 +601,93 @@ def post_thread(token: str, bot_did: str, thread_posts: list, embed_url: Optiona
     }
     
     try:
+        # Handle image upload if provided
+        image_blob = None
+        if image_url:
+            print(f"Uploading image from: {image_url}")
+            image_blob = upload_image_to_bsky(token, image_url)
+            if not image_blob:
+                print("Failed to upload image, continuing with link-only embed")
+
         root_uri = None
         root_cid = None
         parent_uri = None
         parent_cid = None
         
         for i, post_text in enumerate(thread_posts):
-            max_retries = 3
-            retry_count = 0
+            data = {
+                "repo": bot_did,
+                "collection": "app.bsky.feed.post",
+                "record": {
+                    "text": post_text,
+                    "$type": "app.bsky.feed.post",
+                    "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
+                }
+            }
             
-            while retry_count < max_retries:
-                try:
-                    data = {
-                        "repo": bot_did,
-                        "collection": "app.bsky.feed.post",
-                        "record": {
-                            "text": post_text,
-                            "$type": "app.bsky.feed.post",
-                            "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
-                        }
+            # Add embed for first post if embed_url is provided
+            if i == 0 and embed_url:
+                embed_data = {
+                    "$type": "app.bsky.embed.external",
+                    "external": {
+                        "uri": embed_url,
+                        "title": thread_posts[0],
+                        "description": ""
                     }
-                    
-                    # Add embed for first post if embed_url is provided
-                    if i == 0 and embed_url:
-                        data["record"]["embed"] = {
-                            "$type": "app.bsky.embed.external",
-                            "external": {
-                                "uri": embed_url,
-                                "title": post_text.split('🔗')[0].strip(),
-                                "description": ""
-                            }
-                        }
-                        print(f"Adding link preview for URL: {embed_url}")
-                    
-                    if root_uri and root_cid:
-                        data["record"]["reply"] = {
-                            "root": {
-                                "uri": root_uri,
-                                "cid": root_cid
-                            },
-                            "parent": {
-                                "uri": parent_uri,
-                                "cid": parent_cid
-                            }
-                        }
-                    
-                    # Wait before posting first post to ensure proper embed
-                    if i == 0:
-                        print("Waiting for link preview to generate...")
-                        time.sleep(10)
-                    
-                    response = requests.post(url, headers=headers, json=data)
-                    
-                    if response.status_code == 200:
-                        print(f"Posted thread part {i+1}/{len(thread_posts)}")
-                        
-                        if i == 0:  # First post becomes the root
-                            root_uri = response.json()['uri']
-                            root_cid = response.json()['cid']
-                        
-                        parent_uri = response.json()['uri']
-                        parent_cid = response.json()['cid']
-                        
-                        time.sleep(2)  # Small delay between posts
-                        break  # Success, exit retry loop
-                        
-                    elif response.status_code == 502:
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
-                            time.sleep(5)
-                        else:
-                            print(f"Failed to post thread part {i+1} after {max_retries} attempts")
-                            return False
-                    else:
-                        print(f"Failed to post thread part {i+1}: {response.status_code} - {response.text}")
-                        return False
-                        
-                except Exception as e:
-                    print(f"Error posting thread part {i+1}: {str(e)}")
+                }
+                
+                # Add image to embed if available
+                if image_blob:
+                    embed_data["external"]["thumb"] = image_blob
+                
+                data["record"]["embed"] = embed_data
+                print(f"Adding link preview with image for URL: {embed_url}")
+            
+            # Add thread reply data if not first post
+            if root_uri and root_cid:
+                data["record"]["reply"] = {
+                    "root": {
+                        "uri": root_uri,
+                        "cid": root_cid
+                    },
+                    "parent": {
+                        "uri": parent_uri,
+                        "cid": parent_cid
+                    }
+                }
+            
+            # Wait before posting first post to ensure proper embed
+            if i == 0:
+                print("Waiting for link preview to generate...")
+                time.sleep(10)
+            
+            response = requests.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                print(f"Posted thread part {i+1}/{len(thread_posts)}")
+                
+                if i == 0:  # First post becomes the root
+                    root_uri = response.json()['uri']
+                    root_cid = response.json()['cid']
+                
+                parent_uri = response.json()['uri']
+                parent_cid = response.json()['cid']
+                
+                time.sleep(2)  # Small delay between posts
+                break  # Success, exit retry loop
+                
+            elif response.status_code == 502:
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
+                    time.sleep(5)
+                else:
+                    print(f"Failed to post thread part {i+1} after {max_retries} attempts")
                     return False
-        
+            else:
+                print(f"Failed to post thread part {i+1}: {response.status_code} - {response.text}")
+                return False
+                
         return True
         
     except Exception as e:
@@ -999,78 +1114,51 @@ def fetch_ai_news():
     
     return sorted(news_items, key=lambda x: x['published'], reverse=True)
 
-def extract_article_content(url):
-    """Extract main content from an article URL."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Remove unwanted elements
-        for elem in soup.find_all(['script', 'style', 'nav', 'header', 'footer']):
-            elem.decompose()
-        
-        # Extract main content (customize based on site structure)
-        article = soup.find('article') or soup.find(class_=['article', 'post-content'])
-        
-        if article:
-            paragraphs = article.find_all('p')
-            content = ' '.join([p.text.strip() for p in paragraphs])
-            return content
-        return None
-        
-    except Exception as e:
-        print(f"Error extracting article content: {str(e)}")
-        return None
-
 def generate_news_thread(news_item, article_content, client):
     """Generate an engaging thread about an AI news article."""
     try:
         thread_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",  # Make sure you're using the correct model name
             messages=[
                 {"role": "system", "content": """You are an AI expert creating engaging threads about AI news.
-                Create exactly 4 posts that break down the news, numbered as '1.', '2.', '3.', and '4.'.
+                You MUST create EXACTLY 4 posts that break down the news article.
                 
-                Format your response EXACTLY like this:
-                1. [First post content]
-                2. [Second post content]
-                3. [Third post content]
-                4. [Fourth post content]
+                Required format:
+                1. First post: Attention-grabbing headline/intro (NO link - it will be auto-embedded)
+                2. Second post: Key details or main impact of the news
+                3. Third post: Analysis or interesting implications
+                4. Fourth post: Conclusion with 2-3 relevant hashtags
                 
-                Each post must:
-                - Be under 280 characters
-                - Include 1-2 relevant emojis
-                - First post must include the headline and a clickable link
-                - Last post must include 2-3 relevant hashtags
+                STRICT REQUIREMENTS:
+                - You MUST generate exactly 4 posts
+                - Each post MUST be under 280 characters
+                - Include 1-2 relevant emojis per post
+                - DO NOT include URLs or links
+                - Last post MUST end with hashtags
                 
-                Do not include any other text or formatting."""},
-                {"role": "user", "content": f"""Create an engaging thread about this AI news:
+                Example format:
+                1. Breaking: [Catchy headline] 🚀
+                2. Here's what makes this significant... 💡
+                3. The implications are... 🔮
+                4. Final thoughts... #AI #Tech #Innovation"""},
+                {"role": "user", "content": f"""Create a 4-post thread about this AI news:
                 
-                {news_item['title']} 🔗 {news_item['link']}
+                Title: {news_item['title']}
                 
-                {news_item['summary']}
+                Summary: {news_item['summary']}
                 
-                Full text: {article_content[:2000] if article_content else news_item['summary']}"""}
+                Additional Content: {article_content[:1500] if article_content else ''}
+                
+                Remember: MUST be exactly 4 posts, each under 280 characters!"""}
             ],
             max_tokens=1000,
             temperature=0.7
         )
         
-        # Add error checking for the response
-        if not thread_response or not thread_response.choices:
-            print("No response received from OpenAI API")
-            return None
-            
         # Process and clean the generated posts
         content = thread_response.choices[0].message.content.strip()
-        if not content:
-            print("Empty content received from OpenAI API")
-            return None
-            
-        # Split content by numbered markers
+        
+        # Split content by numbered markers and clean
         thread_posts = []
         for line in content.split('\n'):
             line = line.strip()
@@ -1081,14 +1169,29 @@ def generate_news_thread(news_item, article_content, client):
                     post = post[:277] + "..."
                 thread_posts.append(post)
         
-        # Validate we got the expected number of posts
+        # Validate we got exactly 4 posts
         if len(thread_posts) != 4:
-            print(f"Expected 4 posts, but got {len(thread_posts)}")
+            print(f"Error: Generated {len(thread_posts)} posts instead of required 4")
             print("Raw content received:")
             print(content)
-            return None
             
-        return thread_posts
+            # Attempt to fix by padding or truncating
+            if len(thread_posts) < 4:
+                # Pad with generic posts if we don't have enough
+                while len(thread_posts) < 4:
+                    if len(thread_posts) == 2:
+                        thread_posts.append(f"What makes this particularly interesting is its potential impact on the AI industry... 🔮")
+                    elif len(thread_posts) == 3:
+                        thread_posts.append(f"Stay tuned for more updates! #AI #Tech #Innovation 🚀")
+            elif len(thread_posts) > 4:
+                # Truncate to 4 posts if we have too many
+                thread_posts = thread_posts[:4]
+            
+            print("\nFixed thread posts:")
+            for i, post in enumerate(thread_posts, 1):
+                print(f"{i}. {post}")
+        
+        return thread_posts if len(thread_posts) == 4 else None
         
     except Exception as e:
         print(f"Error generating news thread: {str(e)}")
@@ -1120,8 +1223,8 @@ def post_ai_news(access_token, bot_did, used_posts, client, bot_memory):
             if news_item['id'] not in used_posts:
                 print(f"\nProcessing news: {news_item['title']}")
                 
-                # Extract full article content
-                article_content = extract_article_content(news_item['link'])
+                # Extract full article content and image
+                article_content, article_image = extract_article_content(news_item['link'])
                 if not article_content:
                     print("Failed to extract article content")
                 
@@ -1134,8 +1237,14 @@ def post_ai_news(access_token, bot_did, used_posts, client, bot_memory):
                         print(f"\nPost {i}:")
                         print(post)
                     
-                    # Post the thread with link preview
-                    success = post_thread(access_token, bot_did, thread_posts, embed_url=news_item['link'])
+                    # Post the thread with link preview and image
+                    success = post_thread(
+                        access_token, 
+                        bot_did, 
+                        thread_posts, 
+                        embed_url=news_item['link'],
+                        image_url=article_image
+                    )
                     
                     if success:
                         used_posts.add(news_item['id'])
@@ -1146,7 +1255,7 @@ def post_ai_news(access_token, bot_did, used_posts, client, bot_memory):
                 else:
                     print("Failed to generate thread posts")
                 
-                break  # Exit after processing one news item
+                break
         
         print("\nNo new AI news items to post")
         return False
