@@ -39,7 +39,7 @@ def main():
     used_topics = set()
     
     # Define time intervals for posting and checking mentions/notifications
-    THREAD_POST_INTERVAL = 3600  # 60 minutes in seconds
+    THREAD_POST_INTERVAL = 2700  # 45 minutes in seconds
     CHECK_INTERVAL = 60  # 1 minute in seconds
     last_post_time = None
     

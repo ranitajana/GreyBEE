@@ -447,9 +447,11 @@ def generate_thread_content(viral_posts: list, used_topics: set, client) -> list
                 {"role": "system", "content": f"""You are an expert creating a focused thread about {main_topic}.
                 Create a thread of 4-5 posts that deeply analyzes this specific topic. The thread should:
                 
-                1. Start with an introduction to {main_topic}
+                1. Start with an introduction to {main_topic}. Begin with a compelling hook that grabs attention.
                 2. Each subsequent post should explore a different aspect of {main_topic}
-                3. End with key takeaways or future implications
+                3. Conclude with an open-ended question that encourages discussion.
+                4. Incorporate relevant hashtags to increase visibility
+                5. Avoid using terms like Key details, conclusions, Final thoughts etc so that it flows naturally.
                 
                 Each post MUST:
                 - Be under 280 characters
@@ -615,79 +617,84 @@ def post_thread(token: str, bot_did: str, thread_posts: list, embed_url: Optiona
         parent_cid = None
         
         for i, post_text in enumerate(thread_posts):
-            data = {
-                "repo": bot_did,
-                "collection": "app.bsky.feed.post",
-                "record": {
-                    "text": post_text,
-                    "$type": "app.bsky.feed.post",
-                    "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
-                }
-            }
+            max_retries = 3
+            retry_count = 0
             
-            # Add embed for first post if embed_url is provided
-            if i == 0 and embed_url:
-                embed_data = {
-                    "$type": "app.bsky.embed.external",
-                    "external": {
-                        "uri": embed_url,
-                        "title": thread_posts[0],
-                        "description": ""
+            while retry_count < max_retries:
+                data = {
+                    "repo": bot_did,
+                    "collection": "app.bsky.feed.post",
+                    "record": {
+                        "text": post_text,
+                        "$type": "app.bsky.feed.post",
+                        "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
                     }
                 }
                 
-                # Add image to embed if available
-                if image_blob:
-                    embed_data["external"]["thumb"] = image_blob
-                
-                data["record"]["embed"] = embed_data
-                print(f"Adding link preview with image for URL: {embed_url}")
-            
-            # Add thread reply data if not first post
-            if root_uri and root_cid:
-                data["record"]["reply"] = {
-                    "root": {
-                        "uri": root_uri,
-                        "cid": root_cid
-                    },
-                    "parent": {
-                        "uri": parent_uri,
-                        "cid": parent_cid
+                # Add embed for first post if embed_url is provided
+                if i == 0 and embed_url:
+                    embed_data = {
+                        "$type": "app.bsky.embed.external",
+                        "external": {
+                            "uri": embed_url,
+                            "title": thread_posts[0],
+                            "description": ""
+                        }
                     }
-                }
-            
-            # Wait before posting first post to ensure proper embed
-            if i == 0:
-                print("Waiting for link preview to generate...")
-                time.sleep(10)
-            
-            response = requests.post(url, headers=headers, json=data)
-            
-            if response.status_code == 200:
-                print(f"Posted thread part {i+1}/{len(thread_posts)}")
+                    
+                    # Add image to embed if available
+                    if image_blob:
+                        embed_data["external"]["thumb"] = image_blob
+                    
+                    data["record"]["embed"] = embed_data
+                    print(f"Adding link preview with image for URL: {embed_url}")
                 
-                if i == 0:  # First post becomes the root
-                    root_uri = response.json()['uri']
-                    root_cid = response.json()['cid']
+                # Add thread reply data if not first post
+                if root_uri and root_cid:
+                    data["record"]["reply"] = {
+                        "root": {
+                            "uri": root_uri,
+                            "cid": root_cid
+                        },
+                        "parent": {
+                            "uri": parent_uri,
+                            "cid": parent_cid
+                        }
+                    }
                 
-                parent_uri = response.json()['uri']
-                parent_cid = response.json()['cid']
+                # Wait before posting first post to ensure proper embed
+                if i == 0:
+                    print("Waiting for link preview to generate...")
+                    time.sleep(10)
                 
-                time.sleep(2)  # Small delay between posts
-                break  # Success, exit retry loop
+                response = requests.post(url, headers=headers, json=data)
                 
-            elif response.status_code == 502:
-                retry_count += 1
-                if retry_count < max_retries:
-                    print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
-                    time.sleep(5)
+                if response.status_code == 200:
+                    print(f"Posted thread part {i+1}/{len(thread_posts)}")
+                    
+                    if i == 0:  # First post becomes the root
+                        root_uri = response.json()['uri']
+                        root_cid = response.json()['cid']
+                    
+                    parent_uri = response.json()['uri']
+                    parent_cid = response.json()['cid']
+                    
+                    time.sleep(2)  # Small delay between posts
+                    break  # Success, exit retry loop
+                    
+                elif response.status_code == 502:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
+                        time.sleep(5)
+                    else:
+                        print(f"Failed to post thread part {i+1} after {max_retries} attempts")
+                        return False
                 else:
-                    print(f"Failed to post thread part {i+1} after {max_retries} attempts")
+                    print(f"Failed to post thread part {i+1}: {response.status_code} - {response.text}")
                     return False
-            else:
-                print(f"Failed to post thread part {i+1}: {response.status_code} - {response.text}")
-                return False
-                
+        
+        print("Successfully posted complete thread!")
         return True
         
     except Exception as e:
