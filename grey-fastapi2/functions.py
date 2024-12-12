@@ -6,6 +6,10 @@ import time
 import os
 from typing import Optional
 from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
+import feedparser
+from bs4 import BeautifulSoup
+import json
+import hashlib
 
 
 
@@ -479,7 +483,7 @@ def generate_thread_content(viral_posts: list, used_topics: set, client) -> list
         print(f"Error generating thread content: {str(e)}")
         return None
 
-def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
+def post_thread(token: str, bot_did: str, thread_posts: list, embed_url: Optional[str] = None) -> bool:
     """Post a series of connected posts as a thread on Bluesky."""
     url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
     headers = {
@@ -494,7 +498,6 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
         parent_cid = None
         
         for i, post_text in enumerate(thread_posts):
-            # Add retry logic for 502 errors
             max_retries = 3
             retry_count = 0
             
@@ -510,6 +513,18 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
                         }
                     }
                     
+                    # Add embed for first post if embed_url is provided
+                    if i == 0 and embed_url:
+                        data["record"]["embed"] = {
+                            "$type": "app.bsky.embed.external",
+                            "external": {
+                                "uri": embed_url,
+                                "title": post_text.split('🔗')[0].strip(),
+                                "description": ""
+                            }
+                        }
+                        print(f"Adding link preview for URL: {embed_url}")
+                    
                     if root_uri and root_cid:
                         data["record"]["reply"] = {
                             "root": {
@@ -521,6 +536,11 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
                                 "cid": parent_cid
                             }
                         }
+                    
+                    # Wait before posting first post to ensure proper embed
+                    if i == 0:
+                        print("Waiting for link preview to generate...")
+                        time.sleep(10)
                     
                     response = requests.post(url, headers=headers, json=data)
                     
@@ -541,7 +561,7 @@ def post_thread(token: str, bot_did: str, thread_posts: list) -> bool:
                         retry_count += 1
                         if retry_count < max_retries:
                             print(f"Got 502 error, retrying... (attempt {retry_count + 1}/{max_retries})")
-                            time.sleep(5)  # Wait 5 seconds before retrying
+                            time.sleep(5)
                         else:
                             print(f"Failed to post thread part {i+1} after {max_retries} attempts")
                             return False
@@ -922,3 +942,240 @@ def generate_ai_response(client, thread_context, author, text, reason, bot_memor
     except Exception as e:
         print(f"Error generating AI response: {str(e)}")
         return None
+
+def fetch_ai_news():
+    """Fetch AI news from multiple reliable sources."""
+    news_sources = {
+        'MIT Technology Review': {
+            'url': 'https://www.technologyreview.com/topic/artificial-intelligence/feed',
+            'type': 'rss'
+        },
+        'TechCrunch AI': {
+            'url': 'https://techcrunch.com/category/artificial-intelligence/feed',
+            'type': 'rss'
+        },
+        'VentureBeat AI': {
+            'url': 'https://venturebeat.com/category/ai/feed/',
+            'type': 'rss'
+        },
+        'Wired AI': {
+            'url': 'https://www.wired.com/tag/artificial-intelligence/feed',
+            'type': 'rss'
+        }
+    }
+    
+    news_items = []
+    
+    for source_name, source_info in news_sources.items():
+        try:
+            if source_info['type'] == 'rss':
+                feed = feedparser.parse(source_info['url'])
+                for entry in feed.entries[:5]:  # Get 5 most recent entries
+                    # Create unique ID for deduplication
+                    content_hash = hashlib.md5(
+                        f"{entry.title}{entry.link}".encode()
+                    ).hexdigest()
+                    
+                    # Extract main image if available
+                    image_url = None
+                    if hasattr(entry, 'content') and entry.content:
+                        soup = BeautifulSoup(entry.content[0].value, 'html.parser')
+                        img = soup.find('img')
+                        if img and img.get('src'):
+                            image_url = img['src']
+                    
+                    news_items.append({
+                        'id': content_hash,
+                        'title': entry.title,
+                        'link': entry.link,
+                        'summary': entry.summary,
+                        'published': entry.published,
+                        'source': source_name,
+                        'image_url': image_url
+                    })
+                    
+        except Exception as e:
+            print(f"Error fetching from {source_name}: {str(e)}")
+    
+    return sorted(news_items, key=lambda x: x['published'], reverse=True)
+
+def extract_article_content(url):
+    """Extract main content from an article URL."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted elements
+        for elem in soup.find_all(['script', 'style', 'nav', 'header', 'footer']):
+            elem.decompose()
+        
+        # Extract main content (customize based on site structure)
+        article = soup.find('article') or soup.find(class_=['article', 'post-content'])
+        
+        if article:
+            paragraphs = article.find_all('p')
+            content = ' '.join([p.text.strip() for p in paragraphs])
+            return content
+        return None
+        
+    except Exception as e:
+        print(f"Error extracting article content: {str(e)}")
+        return None
+
+def generate_news_thread(news_item, article_content, client):
+    """Generate an engaging thread about an AI news article."""
+    try:
+        thread_response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": """You are an AI expert creating engaging threads about AI news.
+                Create exactly 4 posts that break down the news, numbered as '1.', '2.', '3.', and '4.'.
+                
+                Format your response EXACTLY like this:
+                1. [First post content]
+                2. [Second post content]
+                3. [Third post content]
+                4. [Fourth post content]
+                
+                Each post must:
+                - Be under 280 characters
+                - Include 1-2 relevant emojis
+                - First post must include the headline and a clickable link
+                - Last post must include 2-3 relevant hashtags
+                
+                Do not include any other text or formatting."""},
+                {"role": "user", "content": f"""Create an engaging thread about this AI news:
+                
+                {news_item['title']} 🔗 {news_item['link']}
+                
+                {news_item['summary']}
+                
+                Full text: {article_content[:2000] if article_content else news_item['summary']}"""}
+            ],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        
+        # Add error checking for the response
+        if not thread_response or not thread_response.choices:
+            print("No response received from OpenAI API")
+            return None
+            
+        # Process and clean the generated posts
+        content = thread_response.choices[0].message.content.strip()
+        if not content:
+            print("Empty content received from OpenAI API")
+            return None
+            
+        # Split content by numbered markers
+        thread_posts = []
+        for line in content.split('\n'):
+            line = line.strip()
+            if line and any(line.startswith(f"{i}.") for i in range(1, 5)):
+                # Remove the number and leading space
+                post = line[2:].strip()
+                if len(post) > 280:
+                    post = post[:277] + "..."
+                thread_posts.append(post)
+        
+        # Validate we got the expected number of posts
+        if len(thread_posts) != 4:
+            print(f"Expected 4 posts, but got {len(thread_posts)}")
+            print("Raw content received:")
+            print(content)
+            return None
+            
+        return thread_posts
+        
+    except Exception as e:
+        print(f"Error generating news thread: {str(e)}")
+        print("Full error details:", str(e))
+        return None
+
+def post_ai_news(access_token, bot_did, used_posts, client, bot_memory):
+    """Post AI news content with duplicate checking."""
+    try:
+        # Check for force stop
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - News posting cancelled")
+            return False
+        
+        # Fetch recent AI news
+        print("\nFetching recent AI news...")
+        news_items = fetch_ai_news()
+        
+        if not news_items:
+            print("No news items found")
+            return False
+        
+        # Find first unposted news item
+        for news_item in news_items:
+            # Add debug print for article ID
+            print(f"\nChecking news item ID: {news_item['id']}")
+            print(f"Is article already used? {news_item['id'] in used_posts}")
+            
+            if news_item['id'] not in used_posts:
+                print(f"\nProcessing news: {news_item['title']}")
+                
+                # Extract full article content
+                article_content = extract_article_content(news_item['link'])
+                if not article_content:
+                    print("Failed to extract article content")
+                
+                # Generate thread content
+                thread_posts = generate_news_thread(news_item, article_content, client)
+                
+                if thread_posts:
+                    print(f"\nGenerated {len(thread_posts)} posts for news thread:")
+                    for i, post in enumerate(thread_posts, 1):
+                        print(f"\nPost {i}:")
+                        print(post)
+                    
+                    # Post the thread with link preview
+                    success = post_thread(access_token, bot_did, thread_posts, embed_url=news_item['link'])
+                    
+                    if success:
+                        used_posts.add(news_item['id'])
+                        print(f"\n✅ Successfully posted news thread about: {news_item['title']}")
+                        return True
+                    else:
+                        print("\n❌ Failed to post news thread")
+                else:
+                    print("Failed to generate thread posts")
+                
+                break  # Exit after processing one news item
+        
+        print("\nNo new AI news items to post")
+        return False
+        
+    except Exception as e:
+        print(f"Error posting AI news: {str(e)}")
+        return False
+
+def save_used_content(used_posts, used_topics, filename='used_content.json'):
+    """Save used content to prevent duplicates across restarts."""
+    try:
+        content = {
+            'posts': list(used_posts),
+            'topics': list(used_topics)
+        }
+        with open(filename, 'w') as f:
+            json.dump(content, f)
+        print(f"Saved {len(used_posts)} used posts and {len(used_topics)} used topics")
+    except Exception as e:
+        print(f"Error saving used content: {str(e)}")
+
+def load_used_content(filename='used_content.json'):
+    """Load previously used content."""
+    try:
+        with open(filename, 'r') as f:
+            content = json.load(f)
+        return set(content.get('posts', [])), set(content.get('topics', []))
+    except FileNotFoundError:
+        return set(), set()
+    except Exception as e:
+        print(f"Error loading used content: {str(e)}")
+        return set(), set()

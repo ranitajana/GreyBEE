@@ -9,7 +9,10 @@ from functions import (
     get_bot_did, 
     post_reply,
     post_trending_content, 
-    check_notifications
+    check_notifications,
+    post_ai_news,
+    save_used_content,
+    load_used_content
 )
 from memory import BotMemory
 import pytz
@@ -80,6 +83,13 @@ def main():
     # Get the correct bot handle from environment variables
     BOT_HANDLE = os.getenv('BSKY_IDENTIFIER')  # Make sure this matches exactly
     
+    # Load previously used content
+    used_posts, used_topics = load_used_content()
+    
+    # Add news posting interval
+    NEWS_POST_INTERVAL = 7200  # 2 hours in seconds
+    last_news_post_time = None
+    
     while True:
         try:
             current_time = datetime.now()
@@ -141,6 +151,21 @@ def main():
                 
                 # Regular operations
                 check_notifications(access_token, client, client_atproto, bot_memory)
+                
+                # Check for news posts
+                if last_news_post_time is None or (current_time - last_news_post_time).total_seconds() >= NEWS_POST_INTERVAL:
+                    print("\nChecking for AI news...")
+                    success = post_ai_news(
+                        access_token,
+                        bot_did,
+                        used_posts,
+                        client,
+                        bot_memory
+                    )
+                    if success:
+                        last_news_post_time = current_time
+                        # Save used content after successful post
+                        save_used_content(used_posts, used_topics)
                 
                 if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
                     print("\nPosting new trending thread...")
