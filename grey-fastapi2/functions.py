@@ -10,6 +10,7 @@ import feedparser
 from bs4 import BeautifulSoup
 import json
 import hashlib
+import random
 
 
 
@@ -196,8 +197,8 @@ def generate_response(post_content: str, client) -> Optional[str]:
         print(f"Error generating OpenAI response: {str(e)}")
         return None
 
-def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response, bot_memory):
-    """Post reply with force stop check."""
+def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response, bot_memory, is_meme=False):
+    """Post reply with force stop check. Always mention author but format memes without quotes."""
     if bot_memory.should_force_stop():
         print(f"\n🛑 FORCE STOP: Memory update time - Reply cancelled")
         return False
@@ -213,29 +214,24 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai
     if not thread_data or not post_cid:
         print(f"Failed to get post info for URI: {post_uri}")
         return False
+
+    # Extract root post information
+    root_uri = thread_data.get('post', {}).get('uri')
+    root_cid = thread_data.get('post', {}).get('cid')
     
-    # Get the root post information
-    root_uri = thread_data.get('post', {}).get('record', {}).get('reply', {}).get('root', {}).get('uri')
-    root_cid = thread_data.get('post', {}).get('record', {}).get('reply', {}).get('root', {}).get('cid')
-    
-    # If no root is found, this is the root
     if not root_uri or not root_cid:
-        root_uri = post_uri
-        root_cid = post_cid
-    
-    print(f"Preparing reply for thread. Root URI: {root_uri}, Parent URI: {post_uri}")
-    
-    # Only generate AI response if not provided
-    if ai_response is None:
-        print("Warning: No AI response provided, this should not happen with notifications")
+        print("Failed to get root post information")
         return False
-    
-    # Debugging: Print the AI-generated response
-    print(f"AI-generated response to be posted: {ai_response}")
-    
-    reply_with_mention = f"@{author_handle} {ai_response}"
-    
-    # Create facet for the mention
+
+    # Always mention the author, but format meme responses differently
+    if is_meme:
+        # Remove any quotes from meme response
+        clean_meme = ai_response.strip('"').strip("'")
+        reply_text = f"@{author_handle} {clean_meme}"
+    else:
+        reply_text = f"@{author_handle} {ai_response}"
+
+    # Always include facets for the mention
     facets = [{
         "index": {
             "byteStart": 0,
@@ -246,12 +242,12 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai
             "did": get_user_did(token, author_handle)
         }]
     }]
-    
+
     data = {
         "repo": bot_did,
         "collection": "app.bsky.feed.post",
         "record": {
-            "text": reply_with_mention,
+            "text": reply_text,
             "facets": facets,
             "$type": "app.bsky.feed.post",
             "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
@@ -267,14 +263,19 @@ def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai
             }
         }
     }
-    
+
     try:
         response = requests.post(url, headers=headers, json=data)
         if response.status_code == 200:
-            print(f"Successfully posted reply in thread. Root: {root_uri}, Parent: {post_uri}")
+            print(f"Successfully posted reply to @{author_handle}")
+            # Add a shorter delay between posts (15-30 seconds)
+            time.sleep(random.uniform(15, 30))
             return True
         else:
             print(f"Failed to post reply: {response.status_code} - {response.text}")
+            # If rate limited, wait longer
+            if response.status_code == 429:
+                time.sleep(60)
             return False
     except Exception as e:
         print(f"Error posting reply: {str(e)}")
@@ -757,61 +758,40 @@ def post_trending_content(access_token, bot_did, used_posts, used_topics, client
         print(f"Error in post_trending_content: {str(e)}")
         return False
 
-def get_full_thread_context(token, post_uri, client):
-    """Get the complete thread context by traversing up to the root post and collecting all relevant posts."""
-    thread_context = []
-    
+def get_full_thread_context(token, post_uri, client_atproto):
+    """Get the full context of a thread for better response generation."""
     try:
-        # Get thread using the client
-        res = client.get_post_thread(uri=post_uri)
-        # print(res)  # Debugging: print the response
-        thread = res.thread
-        
-        if not thread:
-            print("No thread data found for the given URI.")
-            return []
-        
-        def process_thread_node(node):
-            """Recursively process thread nodes to extract posts."""
-            if hasattr(node, 'post'):
-                post = node.post
-                thread_context.append({
-                    'author': post.author.handle,
-                    'text': post.record.text,
-                    'created_at': post.record.created_at,
-                    'uri': post.uri,
-                    'is_root': not hasattr(post.record, 'reply'),
-                    'depth': getattr(node, 'depth', 0)
-                })
+        thread_data, _ = get_post_thread(token, post_uri)
+        if not thread_data:
+            return None
             
-            # Process parent posts
-            if hasattr(node, 'parent') and node.parent is not None:
-                process_thread_node(node.parent)
+        thread_context = []
+        
+        # Extract root post if it exists
+        root = thread_data.get('post', {})
+        if root:
+            thread_context.append({
+                'text': root.get('record', {}).get('text', ''),
+                'author': root.get('author', {}).get('handle', ''),
+                'is_root': True,
+                'depth': 0
+            })
             
-            # Process replies
-            if hasattr(node, 'replies') and node.replies is not None:
-                for reply in node.replies:
-                    process_thread_node(reply)
-        
-        # Start processing from the thread root
-        process_thread_node(thread)
-        
-        # Sort posts by timestamp to get chronological order
-        thread_context.sort(key=lambda x: x['created_at'])
-        
-        # Print the thread for debugging
-        print("\nThread context:")
-        for i, post in enumerate(thread_context):
-            print(f"\n{i+1}. @{post['author']} (Depth: {post['depth']}):")
-            print(f"   {post['text']}")
-            print(f"   Time: {post['created_at']}")
-            print(f"   {'ROOT POST' if post['is_root'] else 'REPLY'}")
-        
+        # Extract replies
+        replies = thread_data.get('replies', [])
+        for depth, reply in enumerate(replies, 1):
+            thread_context.append({
+                'text': reply.get('post', {}).get('record', {}).get('text', ''),
+                'author': reply.get('post', {}).get('author', {}).get('handle', ''),
+                'is_root': False,
+                'depth': depth
+            })
+            
         return thread_context
         
     except Exception as e:
         print(f"Error getting thread context: {str(e)}")
-        return []
+        return None
 
 def get_reply_details(notification):
     """Extract URI and CID from a reply notification."""
@@ -1035,35 +1015,35 @@ def check_notifications(token, client, client_atproto, bot_memory):
     except Exception as e:
         print(f"Error checking notifications: {str(e)}")
 
-def generate_ai_response(client, thread_context, author, text, reason, bot_memory):
-    """Generate AI response with force stop checks."""
-    try:
-        # Check before starting
-        if bot_memory.should_force_stop():
-            return None
+# def generate_ai_response(client, thread_context, author, text, reason, bot_memory):
+#     """Generate AI response with force stop checks."""
+#     try:
+#         # Check before starting
+#         if bot_memory.should_force_stop():
+#             return None
 
-        # First attempt without memory
-        if bot_memory.should_force_stop():
-            return None
+#         # First attempt without memory
+#         if bot_memory.should_force_stop():
+#             return None
             
-        response = client.chat.completions.create(...)
+#         response = client.chat.completions.create(...)
         
-        # Check before memory search
-        if bot_memory.should_force_stop():
-            return None
+#         # Check before memory search
+#         if bot_memory.should_force_stop():
+#             return None
             
-        memories = bot_memory.search_relevant_memory(...)
+#         memories = bot_memory.search_relevant_memory(...)
         
-        # Check before second attempt
-        if bot_memory.should_force_stop():
-            return None
+#         # Check before second attempt
+#         if bot_memory.should_force_stop():
+#             return None
             
-        # ... rest of function ...
-        return response  # or whatever the function should return
+#         # ... rest of function ...
+#         return response  # or whatever the function should return
         
-    except Exception as e:
-        print(f"Error generating AI response: {str(e)}")
-        return None
+#     except Exception as e:
+#         print(f"Error generating AI response: {str(e)}")
+#         return None
 
 def fetch_ai_news():
     """Fetch AI news from multiple reliable sources."""
@@ -1125,30 +1105,37 @@ def generate_news_thread(news_item, article_content, client):
     """Generate an engaging thread about an AI news article."""
     try:
         thread_response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Make sure you're using the correct model name
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": """You are an AI expert creating engaging threads about AI news.
-                You MUST create EXACTLY 4 posts that break down the news article.
+                Create 3-5 posts that break down the news article (choose the number based on content complexity).
                 
                 Required format:
-                1. First post: Attention-grabbing headline/intro (NO link - it will be auto-embedded)
-                2. Second post: Key details or main impact of the news
-                3. Third post: Analysis or interesting implications
-                4. Fourth post: Conclusion with 2-3 relevant hashtags
+                1. First post: Attention-grabbing headline that includes specific details (NO link - it will be auto-embedded)
+                2. Second post: SPECIFIC key details or main impact (never use generic phrases like "Here's what makes this significant")
+                3. Third post: CONCRETE implications or analysis (never use generic phrases like "The implications are")
+                [4-5]. Additional posts only if needed for important details
+                Final post: Clear conclusion with 2-3 relevant hashtags
                 
                 STRICT REQUIREMENTS:
-                - You MUST generate exactly 4 posts
+                - Generate 3-5 posts depending on content complexity
+                - Each post MUST contain SPECIFIC details, never generic statements
                 - Each post MUST be under 280 characters
                 - Include 1-2 relevant emojis per post
                 - DO NOT include URLs or links
                 - Last post MUST end with hashtags
                 
-                Example format:
-                1. Breaking: [Catchy headline] 🚀
-                2. Here's what makes this significant... 💡
-                3. The implications are... 🔮
-                4. Final thoughts... #AI #Tech #Innovation"""},
-                {"role": "user", "content": f"""Create a 4-post thread about this AI news:
+                BAD examples (DO NOT USE):
+                ❌ "Here's what makes this significant..."
+                ❌ "The implications are..."
+                ❌ "This could be important..."
+                
+                GOOD examples:
+                ✅ "Google's new AI model achieves 98% accuracy in medical diagnosis, reducing error rates by 50% compared to human doctors 🏥"
+                ✅ "The model processes 1M patient records in seconds, using advanced neural networks to detect patterns humans might miss 🔍"
+                ✅ "This breakthrough could save $2B annually in healthcare costs and reduce misdiagnosis rates by 60% in rural areas 📊"
+                """},
+                {"role": "user", "content": f"""Create a thread (3-5 posts) about this AI news:
                 
                 Title: {news_item['title']}
                 
@@ -1156,49 +1143,56 @@ def generate_news_thread(news_item, article_content, client):
                 
                 Additional Content: {article_content[:1500] if article_content else ''}
                 
-                Remember: MUST be exactly 4 posts, each under 280 characters!"""}
+                Remember: 
+                - Each post MUST contain SPECIFIC details and numbers when possible
+                - NO generic statements like "Here's what makes this significant"
+                - Each post must be under 280 characters
+                - Use 3-5 posts based on content complexity"""}
             ],
             max_tokens=1000,
             temperature=0.7
         )
         
-        # Process and clean the generated posts
+        # Process and validate the generated posts
         content = thread_response.choices[0].message.content.strip()
+        thread_posts = []
         
         # Split content by numbered markers and clean
-        thread_posts = []
         for line in content.split('\n'):
             line = line.strip()
-            if line and any(line.startswith(f"{i}.") for i in range(1, 5)):
-                # Remove the number and leading space
+            if line and any(line.startswith(f"{i}.") for i in range(1, 6)):  # Changed to 6 to allow 5 posts
                 post = line[2:].strip()
                 if len(post) > 280:
                     post = post[:277] + "..."
+                    
+                # Check for generic phrases
+                generic_phrases = [
+                    "here's what makes this significant",
+                    "the implications are",
+                    "this could be important",
+                    "what makes this interesting",
+                    "this is significant because",
+                    "here's why this matters"
+                ]
+                
+                if any(phrase in post.lower() for phrase in generic_phrases):
+                    print(f"Detected generic phrase in post: {post}")
+                    continue  # Skip this post and try regenerating
+                    
                 thread_posts.append(post)
         
-        # Validate we got exactly 4 posts
-        if len(thread_posts) != 4:
-            print(f"Error: Generated {len(thread_posts)} posts instead of required 4")
-            print("Raw content received:")
-            print(content)
+        # Validate number of posts
+        if len(thread_posts) < 3 or len(thread_posts) > 5:
+            print(f"Generated {len(thread_posts)} posts, which is outside the allowed range (3-5). Regenerating...")
+            return generate_news_thread(news_item, article_content, client)
             
-            # Attempt to fix by padding or truncating
-            if len(thread_posts) < 4:
-                # Pad with generic posts if we don't have enough
-                while len(thread_posts) < 4:
-                    if len(thread_posts) == 2:
-                        thread_posts.append(f"What makes this particularly interesting is its potential impact on the AI industry... 🔮")
-                    elif len(thread_posts) == 3:
-                        thread_posts.append(f"Stay tuned for more updates! #AI #Tech #Innovation 🚀")
-            elif len(thread_posts) > 4:
-                # Truncate to 4 posts if we have too many
-                thread_posts = thread_posts[:4]
-            
-            print("\nFixed thread posts:")
-            for i, post in enumerate(thread_posts, 1):
-                print(f"{i}. {post}")
+        # Final validation of post content
+        for post in thread_posts:
+            if len(post.split()) < 5:  # Check if post is too short
+                print("Post too short, regenerating...")
+                return generate_news_thread(news_item, article_content, client)
         
-        return thread_posts if len(thread_posts) == 4 else None
+        return thread_posts
         
     except Exception as e:
         print(f"Error generating news thread: {str(e)}")
@@ -1295,3 +1289,199 @@ def load_used_content(filename='used_content.json'):
     except Exception as e:
         print(f"Error loading used content: {str(e)}")
         return set(), set()
+
+def generate_meme_response(post_content, thread_context, client):
+    """Generate witty text-meme responses that are contextually relevant and professional."""
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": """You are a witty AI expert who creates clever, contextual responses 
+                to AI discussions. Your responses should demonstrate deep understanding of AI/ML while being 
+                entertaining and professional.
+
+                Response Style Guide:
+                1. Industry Insights with Wit:
+                "When you realize your AI model's 99.9% accuracy was just memorizing the training data 📊"
+
+                2. Technical Humor:
+                "Nobody:
+                Transformer attention heads: 'Everything is important!' 🎯"
+
+                3. Development Reality:
+                "Me when the model finally converges:
+                *GPU immediately runs out of memory* 💰"
+
+                4. Research vs Reality:
+                "That moment when your 'simple 3-layer architecture' needs 
+                17 callbacks and a prayer to the CUDA gods ⚡"
+
+                5. AI Community Inside Jokes:
+                "Everyone: Just increase the batch size
+                My GPU: We don't do that here 🎮"
+
+                Key Requirements:
+                - Show deep understanding of AI/ML concepts
+                - Reference specific technical details from the thread
+                - Use industry-specific terminology accurately
+                - Keep it professional yet entertaining
+                - Make it relatable to AI/ML practitioners
+                - Include exactly one relevant emoji
+                - Stay under 240 characters
+                - Use meme formats like 'Nobody:', 'When you realize', etc.
+                
+                Advanced Techniques:
+                - Use technical parallels
+                - Reference real ML workflows
+                - Include specific ML metrics/parameters
+                - Play on common ML debugging scenarios
+                - Reference current AI trends/tools
+                - Use popular meme formats with AI twists"""},
+                {"role": "user", "content": f"""Create a witty, technically-accurate response to this AI discussion:
+                
+                Full Thread Context: {thread_context}
+                Latest Post: {post_content}
+                
+                Requirements:
+                - Reference specific technical elements from the discussion
+                - Show understanding of the context
+                - Be clever but professional
+                - Include relevant AI/ML terminology
+                - Use one of these formats:
+                  * "Nobody: ..."
+                  * "When you realize..."
+                  * "That moment when..."
+                  * "Me when..."
+                  * "Everyone: ..."
+                """}
+            ],
+            max_tokens=100,
+            temperature=0.85  # Balanced between creativity and coherence
+        )
+        
+        ai_response = response.choices[0].message.content.strip()
+        
+        # Clean up and validate response
+        if len(ai_response) > 240:
+            ai_response = ai_response[:237] + "..."
+            
+        # Ensure response has technical merit
+        technical_terms = ['model', 'training', 'neural', 'layer', 'data', 
+                         'accuracy', 'loss', 'GPU', 'inference', 'parameters',
+                         'batch', 'epoch', 'gradient', 'optimizer', 'transformer',
+                         'attention', 'fine-tune', 'dataset', 'validation']
+        has_technical_content = any(term in ai_response.lower() for term in technical_terms)
+        
+        # Ensure response uses a meme format
+        meme_patterns = [
+            "when you realize",
+            "that moment when",
+            "me when",
+            "nobody:",
+            "everyone:"
+        ]
+        has_meme_format = any(pattern in ai_response.lower() for pattern in meme_patterns)
+        
+        if not has_technical_content or not has_meme_format:
+            # Try again if response lacks either technical substance or meme format
+            return generate_meme_response(post_content, thread_context, client)
+            
+        return ai_response
+        
+    except Exception as e:
+        print(f"Error generating meme response: {str(e)}")
+        return None
+
+def find_popular_ai_discussions(token, client_atproto, used_meme_responses, min_engagement=5):
+    """Find popular AI-related discussions to engage with."""
+    try:
+        popular_posts = []
+        ai_keywords = [
+            "artificial intelligence", "machine learning", "AI", 
+            "neural networks", "deep learning", "GPT", "LLM",
+            "chatgpt", "claude", "gemini"
+        ]
+        
+        # Common English words to check for language detection
+        english_markers = [
+            'the', 'is', 'are', 'and', 'or', 'but', 'in', 'on', 'at',
+            'with', 'for', 'to', 'of', 'this', 'that', 'these', 'those'
+        ]
+        
+        for keyword in ai_keywords:
+            url = "https://bsky.social/xrpc/app.bsky.feed.searchPosts"
+            headers = {"Authorization": f"Bearer {token}"}
+            params = {"q": keyword, "limit": 20}
+            
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 200:
+                posts = response.json().get('posts', [])
+                
+                for post in posts:
+                    post_uri = post.get('uri')
+                    if post_uri in used_meme_responses:
+                        continue
+                        
+                    post_text = post.get('record', {}).get('text', '').lower()
+                    
+                    # Check if post is in English
+                    english_word_count = sum(1 for marker in english_markers if f" {marker} " in f" {post_text} ")
+                    if english_word_count < 2:  # Require at least 2 English markers
+                        continue
+                    
+                    engagement = (
+                        post.get('likeCount', 0) + 
+                        post.get('replyCount', 0) * 1.5 +
+                        post.get('repostCount', 0) * 2
+                    )
+                    
+                    if engagement >= min_engagement:
+                        post_details = {
+                            'uri': post.get('uri'),
+                            'text': post.get('record', {}).get('text', ''),
+                            'author': post.get('author', {}).get('handle'),
+                            'engagement': engagement,
+                            'created_at': post.get('record', {}).get('createdAt')
+                        }
+                        
+                        if not any(p['uri'] == post_details['uri'] for p in popular_posts):
+                            popular_posts.append(post_details)
+            
+            time.sleep(1)  # Rate limiting
+        
+        sorted_posts = sorted(popular_posts, key=lambda x: x['engagement'], reverse=True)
+        print(f"Found {len(sorted_posts)} popular English AI discussions")
+        
+        # More detailed logging
+        if len(sorted_posts) == 0:
+            print("\nDebug: No English posts met the minimum engagement threshold of", min_engagement)
+        else:
+            for idx, post in enumerate(sorted_posts[:5], 1):
+                print(f"\n{idx}. @{post['author']} (engagement: {post['engagement']:.1f}):")
+                print(f"Text: {post['text'][:100]}...")
+        
+        return sorted_posts
+        
+    except Exception as e:
+        print(f"Error finding popular discussions: {str(e)}")
+        return []
+
+def save_used_meme_responses(used_meme_responses, filename='used_meme_responses.json'):
+    """Save URIs of posts we've already responded to with memes."""
+    try:
+        with open(filename, 'w') as f:
+            json.dump(list(used_meme_responses), f)
+        print(f"Saved {len(used_meme_responses)} used meme responses")
+    except Exception as e:
+        print(f"Error saving used meme responses: {str(e)}")
+
+def load_used_meme_responses(filename='used_meme_responses.json'):
+    """Load previously used meme response URIs."""
+    try:
+        with open(filename, 'r') as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+    except Exception as e:
+        print(f"Error loading used meme responses: {str(e)}")
+        return set()
