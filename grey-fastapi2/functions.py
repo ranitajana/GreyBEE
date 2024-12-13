@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 import json
 import hashlib
 import random
+import traceback
 
 
 
@@ -198,87 +199,117 @@ def generate_response(post_content: str, client) -> Optional[str]:
         return None
 
 def post_reply(token, author_handle, post_content, post_uri, bot_did, client, ai_response, bot_memory, is_meme=False):
-    """Post reply with force stop check. Always mention author but format memes without quotes."""
-    if bot_memory.should_force_stop():
-        print(f"\n🛑 FORCE STOP: Memory update time - Reply cancelled")
-        return False
+    """Post reply to the person who mentioned the bot."""
+    try:
+        if bot_memory.should_force_stop():
+            print(f"\n🛑 FORCE STOP: Memory update time - Reply cancelled")
+            return False
+            
+        url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
         
-    url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    # Get the post info including CID
-    thread_data, post_cid = get_post_thread(token, post_uri)
-    if not thread_data or not post_cid:
-        print(f"Failed to get post info for URI: {post_uri}")
-        return False
-
-    # Extract root post information
-    root_uri = thread_data.get('post', {}).get('uri')
-    root_cid = thread_data.get('post', {}).get('cid')
-    
-    if not root_uri or not root_cid:
-        print("Failed to get root post information")
-        return False
-
-    # Always mention the author, but format meme responses differently
-    if is_meme:
-        # Remove any quotes from meme response
-        clean_meme = ai_response.strip('"').strip("'")
-        reply_text = f"@{author_handle} {clean_meme}"
-    else:
-        reply_text = f"@{author_handle} {ai_response}"
-
-    # Always include facets for the mention
-    facets = [{
-        "index": {
-            "byteStart": 0,
-            "byteEnd": len(author_handle) + 1
-        },
-        "features": [{
-            "$type": "app.bsky.richtext.facet#mention",
-            "did": get_user_did(token, author_handle)
-        }]
-    }]
-
-    data = {
-        "repo": bot_did,
-        "collection": "app.bsky.feed.post",
-        "record": {
-            "text": reply_text,
-            "facets": facets,
-            "$type": "app.bsky.feed.post",
-            "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
-            "reply": {
-                "root": {
-                    "uri": root_uri,
-                    "cid": root_cid
-                },
-                "parent": {
-                    "uri": post_uri,
-                    "cid": post_cid
+        # Get the thread info
+        thread_url = f"https://bsky.social/xrpc/app.bsky.feed.getPostThread"
+        thread_params = {"uri": post_uri}
+        thread_response = requests.get(thread_url, headers=headers, params=thread_params)
+        
+        if thread_response.status_code != 200:
+            print(f"Failed to get thread info: {thread_response.status_code}")
+            return False
+            
+        thread_data = thread_response.json().get('thread', {})
+        
+        # The parent post will be the one containing the mention (where author_handle mentioned the bot)
+        parent_uri = post_uri  # This is the URI of the mention/reply
+        parent_cid = thread_data.get('post', {}).get('cid')
+        
+        # Get the root post
+        root_post = thread_data
+        while root_post.get('parent'):
+            root_post = root_post['parent']
+        root_uri = root_post.get('post', {}).get('uri')
+        root_cid = root_post.get('post', {}).get('cid')
+        
+        # If no root found, use parent as root
+        if not root_uri or not root_cid:
+            root_uri = parent_uri
+            root_cid = parent_cid
+        
+        print(f"\nReplying to @{author_handle} (person who mentioned the bot)")
+        print(f"In thread:")
+        print(f"Parent URI: {parent_uri}")
+        print(f"Parent CID: {parent_cid}")
+        print(f"Root URI: {root_uri}")
+        print(f"Root CID: {root_cid}")
+        
+        # Format reply text - always reply to the person who mentioned the bot
+        if ai_response.startswith(f"@{author_handle}"):
+            reply_text = ai_response
+        else:
+            reply_text = f"@{author_handle} {ai_response}"
+            
+        # Truncate if needed
+        if len(reply_text) > 300:
+            reply_text = reply_text[:297] + "..."
+            
+        # Create record
+        data = {
+            "repo": bot_did,
+            "collection": "app.bsky.feed.post",
+            "record": {
+                "text": reply_text,
+                "facets": [{
+                    "index": {
+                        "byteStart": 0,
+                        "byteEnd": len(author_handle) + 1
+                    },
+                    "features": [{
+                        "$type": "app.bsky.richtext.facet#mention",
+                        "did": get_user_did(token, author_handle)
+                    }]
+                }],
+                "$type": "app.bsky.feed.post",
+                "createdAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z'),
+                "reply": {
+                    "root": {
+                        "uri": root_uri,
+                        "cid": root_cid
+                    },
+                    "parent": {
+                        "uri": parent_uri,
+                        "cid": parent_cid
+                    }
                 }
             }
         }
-    }
-
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            print(f"Successfully posted reply to @{author_handle}")
-            # Add a shorter delay between posts (15-30 seconds)
-            time.sleep(random.uniform(15, 30))
-            return True
-        else:
-            print(f"Failed to post reply: {response.status_code} - {response.text}")
-            # If rate limited, wait longer
-            if response.status_code == 429:
-                time.sleep(60)
-            return False
+        
+        # Post with retry logic
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            response = requests.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                print(f"✅ Successfully posted reply to @{author_handle}")
+                return True
+            elif response.status_code == 502:
+                retry_count += 1
+                print(f"⚠️ Got 502 error, retrying... ({retry_count}/{max_retries})")
+                time.sleep(5)
+            else:
+                print(f"❌ Failed to post reply: {response.status_code}")
+                print(f"Response: {response.text}")
+                return False
+                
+        return False
+        
     except Exception as e:
-        print(f"Error posting reply: {str(e)}")
+        print(f"❌ Error in post_reply: {str(e)}")
+        print(f"Stack trace: {traceback.format_exc()}")
         return False
 
 def get_user_did(token, handle):
@@ -759,38 +790,89 @@ def post_trending_content(access_token, bot_did, used_posts, used_topics, client
         return False
 
 def get_full_thread_context(token, post_uri, client_atproto):
-    """Get the full context of a thread for better response generation."""
+    """Get the complete thread context including all parent posts and replies."""
     try:
-        thread_data, _ = get_post_thread(token, post_uri)
-        if not thread_data:
+        url = "https://bsky.social/xrpc/app.bsky.feed.getPostThread"
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        params = {
+            "uri": post_uri,
+            "depth": 100,      # Increased depth for more replies
+            "parentHeight": 100  # Added to get full parent context
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            print(f"Failed to get thread: {response.status_code}")
             return None
             
+        thread_data = response.json().get('thread', {})
         thread_context = []
         
-        # Extract root post if it exists
-        root = thread_data.get('post', {})
-        if root:
-            thread_context.append({
-                'text': root.get('record', {}).get('text', ''),
-                'author': root.get('author', {}).get('handle', ''),
-                'is_root': True,
-                'depth': 0
-            })
+        def extract_post_data(post_data, depth=0, post_type="reply"):
+            """Helper function to extract post data with post type context"""
+            return {
+                'text': post_data.get('record', {}).get('text', ''),
+                'author': post_data.get('author', {}).get('handle', ''),
+                'depth': depth,
+                'type': post_type,  # parent, root, or reply
+                'timestamp': post_data.get('record', {}).get('createdAt', ''),
+                'uri': post_data.get('uri', '')
+            }
+
+        # First, get all parent posts (traverse up)
+        def get_parent_posts(thread_node):
+            parents = []
+            current = thread_node
+            depth = 0
             
-        # Extract replies
-        replies = thread_data.get('replies', [])
-        for depth, reply in enumerate(replies, 1):
-            thread_context.append({
-                'text': reply.get('post', {}).get('record', {}).get('text', ''),
-                'author': reply.get('post', {}).get('author', {}).get('handle', ''),
-                'is_root': False,
-                'depth': depth
-            })
+            while 'parent' in current:
+                current = current['parent']
+                parent_post = current.get('post', {})
+                if parent_post:
+                    parents.append(extract_post_data(parent_post, depth, "parent"))
+                depth -= 1
             
+            return list(reversed(parents))  # Reverse to get chronological order
+        
+        # Get all parent posts
+        parent_posts = get_parent_posts(thread_data)
+        thread_context.extend(parent_posts)
+        
+        # Add the root post (the first non-parent post)
+        root_post = thread_data.get('post', {})
+        if root_post:
+            thread_context.append(extract_post_data(root_post, len(parent_posts), "root"))
+        
+        # Recursively get all replies
+        def get_replies(reply_data, depth):
+            if not reply_data:
+                return
+            
+            replies = reply_data.get('replies', [])
+            for reply in replies:
+                reply_post = reply.get('post', {})
+                if reply_post:
+                    thread_context.append(extract_post_data(reply_post, depth, "reply"))
+                    get_replies(reply, depth + 1)
+        
+        # Get all replies
+        get_replies(thread_data, len(parent_posts) + 1)
+        
+        # Sort by timestamp to maintain chronological order
+        thread_context.sort(key=lambda x: x.get('timestamp', ''))
+        
+        # Debug logging
+        print(f"\nRetrieved full thread context with {len(thread_context)} posts:")
+        for post in thread_context:
+            print(f"[{post['type'].upper()}] @{post['author']} (depth: {post['depth']}): {post['text'][:50]}...")
+        
         return thread_context
         
     except Exception as e:
         print(f"Error getting thread context: {str(e)}")
+        print("Full error details:", traceback.format_exc())
         return None
 
 def get_reply_details(notification):
@@ -808,25 +890,33 @@ def get_reply_details(notification):
         return None, None
 
 def check_notifications(token, client, client_atproto, bot_memory):
-    """Check notifications with force stop check."""
+    """Check only unseen notifications and mark them as seen after processing."""
     try:
-        # Initial check
         if bot_memory.should_force_stop():
             print(f"\n🛑 FORCE STOP: Memory update time - Notifications check cancelled")
             return
 
-        url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
+        # First, get unread count and latest seen timestamp
+        seen_url = "https://bsky.social/xrpc/app.bsky.notification.getUnreadCount"
+        seen_response = requests.get(
+            seen_url, 
+            headers={"Authorization": f"Bearer {token}"}
+        )
         
-        # Calculate timestamp for 1 minute ago
-        one_minute_ago = datetime.now(pytz.UTC) - timedelta(minutes=1)
+        if seen_response.status_code != 200:
+            print(f"Failed to get unread count: {seen_response.status_code}")
+            return
+            
+        unread_count = seen_response.json().get('count', 0)
         
+        if unread_count == 0:
+            print("No new notifications")
+            return
+            
         # Get notifications
-        params = {
-            "limit": 20  # Reasonable limit for 1-minute window
-        }
+        url = "https://bsky.social/xrpc/app.bsky.notification.listNotifications"
+        params = {"limit": 50}
+        headers = {"Authorization": f"Bearer {token}"}
         
         response = requests.get(url, headers=headers, params=params)
         if response.status_code != 200:
@@ -834,216 +924,236 @@ def check_notifications(token, client, client_atproto, bot_memory):
             return
             
         notifications = response.json().get('notifications', [])
-        if not notifications:
-            print("No notifications found")
-            return
-            
-        # Filter notifications from the last minute
-        recent_notifications = []
-        for notif in notifications:
-            notif_time = datetime.fromisoformat(notif.get('indexedAt').replace('Z', '+00:00'))
-            if notif_time >= one_minute_ago:
-                recent_notifications.append(notif)
+        print(f"\n📬 Found {unread_count} unread notifications")
         
-        if not recent_notifications:
-            print("No new notifications in the last minute")
-            return
-            
-        print(f"\nFound {len(recent_notifications)} new notifications in the last minute:")
+        # Track the latest notification timestamp
+        latest_seen = None
         
-        # Process recent notifications
-        processed_any = False
-        for notif in recent_notifications:
-            reason = notif.get('reason')
-            print(f"\nProcessing notification type: {reason}")
-            
-            # Handle both mentions and replies
-            if reason in ['mention', 'reply']:
+        # Process notifications
+        for notif in notifications[:unread_count]:
+            try:
+                reason = notif.get('reason')
                 author = notif.get('author', {}).get('handle')
                 text = notif.get('record', {}).get('text', '')
+                current_timestamp = notif.get('indexedAt')
                 
-                # Debug prints
-                print(f"\nNotification details:")
-                print(f"Author: {author}")
-                print(f"Text: {text}")
-                print(f"Time: {notif.get('indexedAt')}")
+                # Update latest seen timestamp
+                if not latest_seen or current_timestamp > latest_seen:
+                    latest_seen = current_timestamp
                 
-                # Get reply details
-                uri = notif.get('uri')
-                cid = notif.get('cid')
+                # Print notification details
+                notification_types = {
+                    'like': '❤️ LIKE',
+                    'repost': '🔄 REPOST',
+                    'follow': '👥 FOLLOW',
+                    'mention': '📣 MENTION',
+                    'reply': '💬 REPLY',
+                    'quote': '💭 QUOTE'
+                }
                 
-                if not uri or not cid:
-                    print(f"Missing URI or CID for {reason}")
-                    continue
+                notif_type = notification_types.get(reason, f'❓ {reason.upper()}')
+                print(f"\n{'='*50}")
+                print(f"\n{notif_type} from @{author}")
+                print(f"Content: {text[:100]}{'...' if len(text) > 100 else ''}")
+                print(f"Timestamp: {current_timestamp}")
                 
-                print(f"{reason.capitalize()} from @{author}:")
-                print(f"URI: {uri}")
-                print(f"CID: {cid}")
-                
-                # Get the complete thread context
-                thread_context = get_full_thread_context(token, uri, client_atproto)
-                
-                if thread_context:
-                    # Format the thread context for the AI
-                    thread_conversation = "\n".join([
-                        f"@{post['author']} ({'ROOT' if post['is_root'] else f'REPLY at depth {post['depth']}'}):\n{post['text']}" 
-                        for post in thread_context
-                    ])
+                # Process mentions and replies
+                if reason in ['mention', 'reply']:
+                    uri = notif.get('uri')
+                    print(f"\n🤖 Processing {reason}...")
                     
-                    print("\nGenerating response based on full thread context...")
-                    
-                    try:
-                        # First attempt without memory
-                        response = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Keep responses concise, relevant, and friendly."},
-                                {"role": "user", "content": f"""You are responding to a conversation thread on Bluesky. Here's the complete thread:
-
-                                {thread_conversation}
-
-                                The latest {reason} is from @{author}: "{text}"
-
-                                Please generate a response that:
-                                1. Shows understanding of the entire conversation
-                                2. Directly addresses the latest message
-                                3. Is concise (under 280 characters)
-                                4. Is relevant and helpful
-
-                                Generate response:"""}
-                            ],
-                            max_tokens=100,
-                            temperature=0.7
+                    thread_context = get_full_thread_context(token, uri, client_atproto)
+                    if thread_context:
+                        success = process_notification(
+                            token=token,
+                            notif=notif,
+                            thread_context=thread_context,
+                            client=client,
+                            bot_memory=bot_memory,
+                            bot_did=get_bot_did(token, os.getenv('BSKY_IDENTIFIER'))
                         )
                         
-                        ai_response = response.choices[0].message.content.strip()
-                        
-                        # If the response seems generic or uncertain (you can customize these conditions)
-                        if any(phrase in ai_response.lower() for phrase in [
-                            "i'm not sure", "i cannot", "i don't know", "unclear",
-                            "could you clarify", "please provide more context"
-                        ]):
-                            print("\nInitial response seems uncertain, searching memory for context...")
-                            
-                            # Search memory using the entire thread context
-                            memories = bot_memory.search_relevant_memory(
-                                query_text=f"{thread_conversation}\n\nLatest message: {text}",
-                                limit=5
-                            )
-                            
-                            if memories:
-                                # Format memories for context
-                                memory_context = "\n\n".join([
-                                    f"Previous interaction ({mem['position']}):\n{mem['text']}"
-                                    for mem in memories
-                                ])
-                                
-                                # Try again with memory context
-                                response = client.chat.completions.create(
-                                    model="gpt-4o-mini",
-                                    messages=[
-                                        {"role": "system", "content": "You are a helpful AI assistant engaging in Bluesky conversations. Use the provided memory of past interactions to give more informed and contextual responses. Keep responses concise and relevant."},
-                                        {"role": "user", "content": f"""You are responding to a conversation thread on Bluesky. Here's the complete thread:
-
-                                        {thread_conversation}
-
-                                        The latest {reason} is from @{author}: "{text}"
-
-                                        Here are relevant memories from past interactions:
-                                        {memory_context}
-
-                                        Please generate a response that:
-                                        1. Shows understanding of the entire conversation
-                                        2. Uses relevant context from past interactions
-                                        3. Directly addresses the latest message
-                                        4. Is concise (under 280 characters)
-                                        5. Is relevant and helpful
-
-                                        Generate response:"""}
-                                    ],
-                                    max_tokens=100,
-                                    temperature=0.7
-                                )
-                                
-                                ai_response = response.choices[0].message.content.strip()
-                                print("\nGenerated new response using memory context")
-                        
-                        # Continue with the existing code to post the response
-                        if ai_response:
-                            if len(ai_response) > 280:
-                                ai_response = ai_response[:277] + "..."
-                            
-                            print(f"\nFinal response: {ai_response}")
-                            
-                            success = post_reply(
-                                token=token,
-                                author_handle=author,
-                                post_content=text,
-                                post_uri=uri,
-                                bot_did=get_bot_did(token, os.getenv('BSKY_IDENTIFIER')),
-                                client=client,
-                                ai_response=ai_response,
-                                bot_memory=bot_memory
-                            )
-                            if success:
-                                processed_any = True
-                                print(f"Successfully responded to @{author}'s {reason}")
-                            else:
-                                print(f"Failed to post response to @{author}'s {reason}")
-                    
-                    except Exception as e:
-                        print(f"Error generating/posting AI response: {str(e)}")
-                
-                time.sleep(2)  # Small delay between processing notifications
-        
-        # Mark notifications as seen if we processed any
-        if processed_any:
-            try:
-                seen_url = "https://bsky.social/xrpc/app.bsky.notification.updateSeen"
-                seen_data = {
-                    "seenAt": datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z')
-                }
-                seen_response = requests.post(seen_url, headers=headers, json=seen_data)
-                if seen_response.status_code == 200:
-                    print("\nSuccessfully marked notifications as seen")
+                        if success:
+                            print(f"\n✅ Successfully processed {reason} from @{author}")
+                        else:
+                            print(f"\n❌ Failed to process {reason} from @{author}")
                 else:
-                    print(f"\nFailed to mark notifications as seen: {seen_response.status_code}")
-            
+                    print(f"⏩ Skipping {notif_type} (not a mention or reply)")
+                
             except Exception as e:
-                print(f"Error marking notifications as seen: {str(e)}")
-            
+                print(f"\n❌ Error processing notification: {str(e)}")
+                continue
+        
+        # Mark all processed notifications as seen at once
+        if latest_seen:
+            try:
+                mark_url = "https://bsky.social/xrpc/app.bsky.notification.updateSeen"
+                mark_data = {"seenAt": latest_seen}
+                mark_headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+                
+                mark_response = requests.post(mark_url, headers=mark_headers, json=mark_data)
+                
+                if mark_response.status_code == 200:
+                    print(f"\n✅ Successfully marked all notifications as seen up to: {latest_seen}")
+                else:
+                    print(f"\n❌ Failed to mark notifications as seen: {mark_response.status_code}")
+                    
+            except Exception as e:
+                print(f"\n❌ Error marking notifications as seen: {str(e)}")
+                
     except Exception as e:
-        print(f"Error checking notifications: {str(e)}")
+        print(f"\n❌ Error in check_notifications: {str(e)}")
 
-# def generate_ai_response(client, thread_context, author, text, reason, bot_memory):
-#     """Generate AI response with force stop checks."""
-#     try:
-#         # Check before starting
-#         if bot_memory.should_force_stop():
-#             return None
+def process_notification(token, notif, thread_context, client, bot_memory, bot_did):
+    """Process a single notification with full thread context."""
+    try:
+        author = notif.get('author', {}).get('handle')
+        text = notif.get('record', {}).get('text', '')
+        reason = notif.get('reason')
+        uri = notif.get('uri')
+        
+        print("\n🤔 Analyzing thread context...")
+        print(f"For: {reason} from @{author}")
+        print(f"Message: {text}")
+        
+        # Format thread context for AI
+        thread_conversation = "\n\n".join([
+            f"[{post['type'].upper()} at depth {post['depth']}]\n"
+            f"@{post['author']}: {post['text']}"
+            for post in thread_context
+        ])
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": """You are an AI expert and Social Media Influencer engaging in Bluesky conversations. 
 
-#         # First attempt without memory
-#         if bot_memory.should_force_stop():
-#             return None
-            
-#         response = client.chat.completions.create(...)
+                IMPORTANT GUIDELINES:
+                1. Be direct and natural - avoid typical bot phrases
+                2. NO phrases like:
+                   - "Happy to help"
+                   - "I'd be glad to explain"
+                   - "What aspects interest you"
+                   - "Let me know if you have questions"
+                   - "Hope this helps"
+                   - "Thanks for asking"
+                   - "I understand your question"
+                   
+                3. Instead:
+                   - Get straight to the answer
+                   - Be concise and specific
+                   - Use natural, conversational language
+                   - Sound like a knowledgeable friend
+                   
+                4. Keep responses under 250 characters
+                5. DO NOT include @mentions
+                6. Focus on providing value immediately
+                
+                Remember: No pleasantries or bot-like phrases - just helpful, direct responses."""},
+                {"role": "user", "content": f"""Thread context:
+
+                {thread_conversation}
+
+                The latest {reason} is from @{author}: "{text}"
+                
+                Generate a direct, natural response without any bot-like phrases.
+                Get straight to the point while maintaining a friendly tone.
+                
+                Response must be:
+                1. Under 250 characters
+                2. Direct and specific
+                3. Free of typical bot phrases
+                4. Relevant to the conversation
+                
+                Generate response:"""}
+            ],
+            max_tokens=100,
+            temperature=0.7
+        )
         
-#         # Check before memory search
-#         if bot_memory.should_force_stop():
-#             return None
-            
-#         memories = bot_memory.search_relevant_memory(...)
+        ai_response = response.choices[0].message.content.strip()
         
-#         # Check before second attempt
-#         if bot_memory.should_force_stop():
-#             return None
+        if ai_response:
+            print(f"\n💡 Generated response: {ai_response}")
             
-#         # ... rest of function ...
-#         return response  # or whatever the function should return
+            # Remove any remaining bot-like phrases that might have slipped through
+            common_phrases = [
+                "happy to help",
+                "hope this helps",
+                "let me know if",
+                "thanks for asking",
+                "glad to explain",
+                "feel free to",
+                "don't hesitate to",
+                "i understand",
+                "i'd be happy to",
+                "what aspects",
+                "interesting question"
+            ]
+            
+            response_lower = ai_response.lower()
+            for phrase in common_phrases:
+                if phrase in response_lower:
+                    print(f"⚠️ Removing bot phrase: '{phrase}'")
+                    ai_response = ai_response.replace(phrase, "").strip()
+                    # Clean up any double spaces
+                    ai_response = " ".join(ai_response.split())
+            
+            if len(ai_response) > 250:
+                ai_response = ai_response[:247] + "..."
+                print(f"⚠️ Response truncated to: {ai_response}")
+            
+            print("\n📤 Posting reply...")
+            success = post_reply(
+                token=token,
+                author_handle=author,
+                post_content=text,
+                post_uri=uri,
+                bot_did=bot_did,
+                client=client,
+                ai_response=ai_response,
+                bot_memory=bot_memory
+            )
+            
+            if success:
+                print("✅ Reply posted successfully")
+            else:
+                print("❌ Failed to post reply")
+            
+            return success
+            
+        else:
+            print("❌ No response generated by AI")
+            return False
         
-#     except Exception as e:
-#         print(f"Error generating AI response: {str(e)}")
-#         return None
+    except Exception as e:
+        print(f"\n❌ Error processing notification: {str(e)}")
+        print(f"Stack trace: {traceback.format_exc()}")
+        return False
+
+def mark_notification_seen(token, seen_at):
+    """Mark notifications as seen up to a specific timestamp."""
+    try:
+        url = "https://bsky.social/xrpc/app.bsky.notification.updateSeen"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "seenAt": seen_at
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        return response.status_code == 200
+        
+    except Exception as e:
+        print(f"Error marking notification as seen: {str(e)}")
+        return False
+
 
 def fetch_ai_news():
     """Fetch AI news from multiple reliable sources."""

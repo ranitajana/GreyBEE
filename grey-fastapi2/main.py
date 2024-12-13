@@ -4,6 +4,10 @@ import time
 from dotenv import load_dotenv
 from openai import OpenAI
 from atproto import Client
+from memory import BotMemory
+import pytz
+import random
+
 from functions import (
     get_auth_token, 
     get_bot_did, 
@@ -19,19 +23,24 @@ from functions import (
     save_used_meme_responses,
     load_used_meme_responses
 )
-from memory import BotMemory
-import pytz
-from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
-import random
+
+from config import (MEMORY_UPDATE_TIME, 
+                    MEMORY_UPDATE_TIMEZONE, 
+                    keywords,
+                    THREAD_POST_INTERVAL,
+                    CHECK_INTERVAL,
+                    NEWS_POST_INTERVAL,
+                    MEME_ENGAGEMENT_INTERVAL    
+                    )
+
 
 def main():
     # Load environment variables from .env file
     load_dotenv()
     
     # Initialize OpenAI client with API key
-    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    client_openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
     client_atproto = Client()
-    client_atproto.login(os.getenv('BSKY_IDENTIFIER'), os.getenv('BSKY_PASSWORD'))
     
     # Initialize variables for authentication tokens and bot DID
     access_token = None
@@ -44,63 +53,20 @@ def main():
     used_posts = set()
     used_topics = set()
     
-    # Define time intervals for posting and checking mentions/notifications
-    THREAD_POST_INTERVAL = 2700  # 45 minutes in seconds
-    CHECK_INTERVAL = 60  # 1 minute in seconds
-    last_post_time = None
-    
-    # List of keywords to search for viral posts on Artificial Intelligence
-    keywords = [
-    # General AI Concepts
-    "artificial intelligence", "machine learning", "deep learning", "neural networks", "natural language processing",
-    
-    # AI Applications
-    "computer vision", "speech recognition", "robotics", "autonomous vehicles", "AI in healthcare",
-    
-    # Ethical Considerations
-    "AI ethics", "bias in AI", "transparency", "accountability", "privacy concerns",
-    
-    # AI Technologies
-    "reinforcement learning", "supervised learning", "unsupervised learning", "generative adversarial networks", "edge computing",
-    
-    # Industry Impact
-    "AI in business", "AI in finance", "AI in education", "AI in marketing", "AI and job displacement",
-    
-    # AI Research and Development
-    "AI algorithms", "data science", "big data", "cloud computing", "quantum computing",
-    
-    # Future of AI
-    "singularity", "AGI (Artificial General Intelligence)", "AI governance", "human-AI collaboration", "future of work",
-    
-    # AI Trends
-    "AI startups", "AI funding", "AI conferences", "open-source AI", "AI regulations"
-    ]
-
-    
-    # Define memory update interval
-    MEMORY_UPDATE_INTERVAL = 86400  # 24 hours in seconds (24 * 60 * 60)
-    MEMORY_RETENTION_PERIOD = 1  
+    last_post_time = None 
     last_memory_update = None
+    last_news_post_time = None
+    last_meme_engagement = None
     
     # Initialize memory system ONCE
     print("Initializing bot memory...")
-    bot_memory = BotMemory(client)
+    bot_memory = BotMemory(client_openai)
     
     # Get the correct bot handle from environment variables
-    BOT_HANDLE = os.getenv('BSKY_IDENTIFIER')  # Make sure this matches exactly
+    BOT_HANDLE = os.getenv('BSKY_IDENTIFIER')  
     
     # Load previously used content
     used_posts, used_topics = load_used_content()
-    
-    # Add news posting interval
-    NEWS_POST_INTERVAL = 7200  # 2 hours in seconds
-    last_news_post_time = None
-    
-    # Add meme engagement interval
-    MEME_ENGAGEMENT_INTERVAL = 2400  # 30 minutes
-    last_meme_engagement = None
-    
-    # At the start of main()
     used_meme_responses = load_used_meme_responses()
     
     while True:
@@ -163,7 +129,7 @@ def main():
                         continue
                 
                 # Regular operations
-                check_notifications(access_token, client, client_atproto, bot_memory)
+                check_notifications(access_token, client_openai, client_atproto, bot_memory)
                 
                 # Check for news posts
                 if last_news_post_time is None or (current_time - last_news_post_time).total_seconds() >= NEWS_POST_INTERVAL:
@@ -172,7 +138,7 @@ def main():
                         access_token,
                         bot_did,
                         used_posts,
-                        client,
+                        client_openai,
                         bot_memory
                     )
                     if success:
@@ -183,17 +149,17 @@ def main():
                 if last_post_time is None or (current_time - last_post_time).total_seconds() >= THREAD_POST_INTERVAL:
                     print("\nPosting new trending thread...")
                     success = post_trending_content(
-                        access_token, 
-                        bot_did, 
-                        used_posts, 
-                        used_topics, 
-                        client, 
-                        keywords,
-                        bot_memory  # Pass bot_memory to check for update time
-                    )
+                            access_token, 
+                            bot_did, 
+                            used_posts, 
+                            used_topics, 
+                            client_openai, 
+                            keywords,
+                            bot_memory  # Pass bot_memory to check for update time
+                        )
                     if success:
                         last_post_time = current_time
-                    print(f"Thread posting result: {success}")
+                        print(f"Thread posting result: {success}")
                 
                 # Check for meme engagement opportunities
                 if last_meme_engagement is None or (current_time - last_meme_engagement).total_seconds() >= MEME_ENGAGEMENT_INTERVAL:
@@ -211,7 +177,7 @@ def main():
                                 meme_response = generate_meme_response(
                                     post['text'],
                                     thread_context,
-                                    client
+                                    client_openai
                                 )
                                 
                                 if meme_response:
@@ -221,7 +187,7 @@ def main():
                                         post_content=post['text'],
                                         post_uri=post['uri'],
                                         bot_did=bot_did,
-                                        client=client,
+                                        client=client_openai,
                                         ai_response=meme_response,
                                         bot_memory=bot_memory,
                                         is_meme=True
