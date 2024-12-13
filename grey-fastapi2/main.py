@@ -12,11 +12,17 @@ from functions import (
     check_notifications,
     post_ai_news,
     save_used_content,
-    load_used_content
+    load_used_content,
+    generate_meme_response,
+    find_popular_ai_discussions,
+    get_full_thread_context,
+    save_used_meme_responses,
+    load_used_meme_responses
 )
 from memory import BotMemory
 import pytz
 from config import MEMORY_UPDATE_TIME, MEMORY_UPDATE_TIMEZONE
+import random
 
 def main():
     # Load environment variables from .env file
@@ -90,6 +96,13 @@ def main():
     NEWS_POST_INTERVAL = 7200  # 2 hours in seconds
     last_news_post_time = None
     
+    # Add meme engagement interval
+    MEME_ENGAGEMENT_INTERVAL = 2400  # 30 minutes
+    last_meme_engagement = None
+    
+    # At the start of main()
+    used_meme_responses = load_used_meme_responses()
+    
     while True:
         try:
             current_time = datetime.now()
@@ -117,7 +130,7 @@ def main():
                         BOT_HANDLE
                     )
                     if success:
-                        print("\n✅ Memory update complete")
+                        print("\n Memory update complete")
                         bot_memory.clear_force_stop()
                         last_memory_update = current_time
                     else:
@@ -181,6 +194,58 @@ def main():
                     if success:
                         last_post_time = current_time
                     print(f"Thread posting result: {success}")
+                
+                # Check for meme engagement opportunities
+                if last_meme_engagement is None or (current_time - last_meme_engagement).total_seconds() >= MEME_ENGAGEMENT_INTERVAL:
+                    print("\nLooking for popular AI discussions to engage with...")
+                    popular_posts = find_popular_ai_discussions(access_token, client_atproto, used_meme_responses)
+                    
+                    engagement_count = 0
+                    for post in popular_posts[:5]:
+                        if post['uri'] not in used_meme_responses:  # Double check
+                            try:
+                                # Get thread context
+                                thread_context = get_full_thread_context(access_token, post['uri'], client_atproto)
+                                
+                                # Generate meme response
+                                meme_response = generate_meme_response(
+                                    post['text'],
+                                    thread_context,
+                                    client
+                                )
+                                
+                                if meme_response:
+                                    success = post_reply(
+                                        token=access_token,
+                                        author_handle=post['author'],
+                                        post_content=post['text'],
+                                        post_uri=post['uri'],
+                                        bot_did=bot_did,
+                                        client=client,
+                                        ai_response=meme_response,
+                                        bot_memory=bot_memory,
+                                        is_meme=True
+                                    )
+                                    
+                                    if success:
+                                        used_meme_responses.add(post['uri'])
+                                        save_used_meme_responses(used_meme_responses)  # Save after each successful response
+                                        engagement_count += 1
+                                        print(f"Successfully engaged with @{post['author']}'s post ({engagement_count}/3)")
+                                        
+                                        # Break if we've engaged with 3 posts
+                                        if engagement_count >= 3:
+                                            break
+                                            
+                                        # Wait 30-60 seconds between successful engagements
+                                        time.sleep(random.uniform(30, 60))
+                                
+                            except Exception as e:
+                                print(f"Error engaging with post: {str(e)}")
+                                time.sleep(15)  # Short delay on error
+                                continue
+                    
+                    last_meme_engagement = current_time
             
             # Wait before next check
             print(f"\nWaiting {CHECK_INTERVAL} seconds before next check...")
